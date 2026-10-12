@@ -1,0 +1,21 @@
+Options -Indexes
+RewriteEngine On
+
+# Security headers
+Header always set X-Frame-Options "DENY"
+Header always set X-Content-Type-Options "nosniff"
+Header always set Referrer-Policy "strict-origin-when-cross-origin"
+Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+# img-src and connect-src additionally allow OpenStreetMap tiles, used by the
+# admin team-location map (Leaflet itself comes from the jsdelivr origin above).
+Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com https://www.google-analytics.com https://googleads.g.doubleclick.net https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: blob: https://www.google-analytics.com https://googleads.g.doubleclick.net https://cdn.jsdelivr.net https://*.tile.openstreetmap.org; font-src 'self' https://cdn.jsdelivr.net; connect-src 'self' https://www.google-analytics.com https://*.tile.openstreetmap.org; frame-src 'none'"
+
+# Deny direct access to sensitive directories (directory-relative, works in both subdir and root)
+RewriteRule ^(config|includes|sql|controllers|views)(/|$) - [F,L]
+
+# Serve real files and directories directly (assets, favicon, etc.)
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+
+# Everything else → front controller
+RewriteRule ^(.*)$ index.php?route=$1 [QSA,L]

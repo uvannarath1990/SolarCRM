@@ -1,0 +1,138 @@
+/* ============================================================================
+   Legacy page styles, carried over from v1's app.css.
+
+   This is ONLY the page-level styling that v1 views still depend on — stage
+   badges, the leads table/card swap, inline-edit affordances, tab scrollers.
+
+   Everything to do with the old shell (sidebar, topbar, main-wrapper,
+   mobile-bottom-nav, body padding) is deliberately left out: v2 provides its
+   own chrome and the two would fight. `.task-card` is left out for the same
+   reason — v2 redefines it.
+
+   Loaded BEFORE v2.css so v2 always wins a collision.
+   ========================================================================== */
+
+/* ── Cards ────────────────────────────────────────────────────────────────── */
+.card {
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04);
+}
+.card-header { border-bottom: 1px solid #e2e8f0; }
+
+/* ── Stage badges ─────────────────────────────────────────────────────────── */
+.badge-stage-new          { background-color: #6c757d; color: #fff; }
+.badge-stage-contacted    { background-color: #17a2b8; color: #fff; }
+.badge-stage-visit-sched  { background-color: #fd7e14; color: #fff; }
+.badge-stage-visit-prog   { background-color: #007bff; color: #fff; }
+.badge-stage-visit-done   { background-color: #20c997; color: #fff; }
+.badge-stage-quoted       { background-color: #6f42c1; color: #fff; }
+.badge-stage-won          { background-color: #28a745; color: #fff; }
+.badge-stage-lost         { background-color: #dc3545; color: #fff; }
+.badge-stage-hold         { background-color: #ffc107; color: #212529; }
+
+.stage-pill { cursor: pointer; user-select: none; transition: opacity .15s; }
+.stage-pill:hover { opacity: .8; }
+
+/* ── Inline editing ───────────────────────────────────────────────────────── */
+.editable-num {
+    cursor: pointer;
+    border-bottom: 1px dashed #94a3b8;
+    padding: 0 2px;
+}
+.editable-num:hover { background: #f0f4ff; }
+
+#visitTimer { letter-spacing: .05em; }
+
+/* ── Tabs ─────────────────────────────────────────────────────────────────── */
+.tab-content > .tab-pane { padding-top: .75rem; }
+
+.nav-tabs-scroll {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+}
+.nav-tabs-scroll::-webkit-scrollbar { display: none; }
+.nav-tabs-scroll .nav-link { white-space: nowrap; }
+
+/* ── KPI tiles (dashboard) ────────────────────────────────────────────────── */
+.kpi-tile {
+    cursor: pointer;
+    transition: transform .12s, box-shadow .12s;
+    position: relative;
+}
+.kpi-tile:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 18px rgba(0,0,0,.08);
+}
+.kpi-tile-arrow {
+    position: absolute;
+    top: 8px; right: 10px;
+    opacity: 0;
+    transition: opacity .12s;
+}
+.kpi-tile:hover .kpi-tile-arrow { opacity: 1; }
+
+/* ── Notification badge (legacy markup) ───────────────────────────────────── */
+.notif-badge {
+    background: #dc3545;
+    color: #fff;
+    border-radius: 10px;
+    font-size: .7rem;
+    font-weight: 700;
+    min-width: 18px;
+    text-align: center;
+    padding: 0 4px;
+    display: inline-block;
+}
+
+/* ── Leads: table on desktop, cards on mobile ─────────────────────────────── */
+.lead-card-mobile { display: none; }
+
+@media (max-width: 991.98px) {
+    .leads-table-wrap { display: none !important; }
+    .lead-card-mobile { display: block; }
+
+    .btn-sm { min-height: 36px; display: inline-flex; align-items: center; justify-content: center; }
+
+    .filter-bar .col-6,
+    .filter-bar .col-auto { width: 100% !important; }
+
+    .stage-move-row { overflow-x: auto; flex-wrap: nowrap !important; -webkit-overflow-scrolling: touch; }
+
+    .lead-detail-form .col-md-6,
+    .lead-detail-form .col-md-4 { width: 100%; }
+
+    .fin-form .col-md-4,
+    .fin-form .col-md-3,
+    .fin-form .col-md-5 { width: 100% !important; }
+
+    #leadTabs { flex-wrap: nowrap !important; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+    #leadTabs::-webkit-scrollbar { display: none; }
+    #leadTabs .nav-link { white-space: nowrap; padding: .5rem .75rem; font-size: .8rem; }
+
+    #activityForm .col-md-3,
+    #activityForm .col-md-7,
+    #activityForm .col-auto,
+    #reminderForm .col-md-4,
+    #reminderForm .col-md-6,
+    #reminderForm .col-auto,
+    #opForm .col-md-2,
+    #opForm .col-md-3,
+    #opForm .col-auto { width: 100% !important; }
+
+    .hide-mobile { display: none !important; }
+
+    canvas { max-height: 200px !important; }
+
+    .modal-dialog { margin: .5rem; }
+
+    h5.fw-bold { font-size: 1rem; }
+    .table     { font-size: .8rem; }
+}
+
+/* ── Print ────────────────────────────────────────────────────────────────── */
+@media print {
+    .v2-sidebar, .v2-topbar, .v2-tabbar, .btn { display: none !important; }
+    body { padding: 0 !important; }
+}

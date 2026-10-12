@@ -1,0 +1,24 @@
+flowchart TD
+    A[Task marked complete] --> B{Outcome-gated task?<br/>TC at New, or<br/>SR at New / Visit Scheduled}
+    B -->|Yes| C[Outcome required<br/>+ date or reason]
+    C --> D[Apply outcome:<br/>set stage, dates, reason<br/>create follow-on tasks]
+    B -->|No| E[Mark done<br/>record who, when, on-time]
+
+    E --> F{Task stage = Won?}
+    F -->|Yes| G{All Won tasks done?}
+    G -->|Yes| H[Create Installation task]
+    G -->|No| STOP1([Wait])
+
+    F -->|No| I{Lead at Quoted, Won,<br/>Lost or On Hold?}
+    I -->|Yes| STOP2([Never auto-advance])
+    I -->|No| J{Any task still pending<br/>for current stage?}
+    J -->|Yes| STOP3([Wait])
+    J -->|No| K[Advance to next stage]
+    K --> L[Write STAGE_CHANGE audit]
+    L --> M[Create next stage's tasks]
+    M --> N([Notify rep + managers])
+
+    classDef stop fill:#f1f5f9,stroke:#94a3b8,color:#475569
+    classDef act fill:#dbeafe,stroke:#1f6feb,color:#0f172a
+    class STOP1,STOP2,STOP3 stop
+    class K,L,M,H act

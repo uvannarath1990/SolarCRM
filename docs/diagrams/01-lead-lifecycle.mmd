@@ -1,0 +1,36 @@
+flowchart TD
+    START([Lead captured]) --> VAL{Validation}
+    VAL -->|Name, 10-digit phone,<br/>source, no duplicate| BRANCH{Rep + visit date<br/>supplied?}
+    VAL -->|Fails| REJECT[/Rejected with reason<br/>duplicate links to existing lead/]
+
+    BRANCH -->|Both| VS[Stage: Visit Scheduled<br/>Task to Sales Rep]
+    BRANCH -->|Date only| NEW1[Stage: New<br/>Task to Manager:<br/>assign a Sales Rep]
+    BRANCH -->|Rep only / neither| NEW2[Stage: New<br/>NO TASK CREATED]
+
+    NEW1 --> CONT[Contacted]
+    NEW2 -.->|stale until<br/>someone opens it| CONT
+    CONT --> VS
+    VS --> SVP[Site Visit in Progress<br/>GPS check-in]
+    SVP --> SVC[Site Visit Completed<br/>GPS check-out + survey]
+    SVC --> QUOTED[Quoted<br/>quote amount required]
+
+    QUOTED --> DECISION{Commercial<br/>decision}
+    DECISION -->|Mark Won| WON[Won]
+    DECISION -->|Mark Lost| LOST([Lost<br/>reason required])
+    DECISION -->|Park| HOLD([On Hold])
+
+    WON --> W1[Installation record created]
+    WON --> W2[Cleaning operation seeded<br/>+90 days, repeat 120 days]
+    WON --> W3[4 tasks to Operation Manager]
+    W3 --> INST[Installation<br/>assigned to Installer]
+    INST --> DONE([Installed])
+    DONE --> AMC([Recurring AMC / cleaning])
+
+    classDef auto fill:#dbeafe,stroke:#1f6feb,color:#0f172a
+    classDef manual fill:#fef3c7,stroke:#d97706,color:#0f172a
+    classDef bad fill:#fee2e2,stroke:#dc2626,color:#0f172a
+    classDef good fill:#dcfce7,stroke:#16a34a,color:#0f172a
+    class VS,SVP,SVC,QUOTED,CONT auto
+    class DECISION,WON manual
+    class NEW2,REJECT,LOST bad
+    class DONE,AMC good

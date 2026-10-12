@@ -1,0 +1,24 @@
+flowchart TD
+    REQ[User opens a lead] --> A{Admin, Manager,<br/>Ops Manager, Accounts?}
+    A -->|Yes| OK([Access granted])
+    A -->|No| B{Did they create<br/>this lead?}
+    B -->|Yes| OK
+    B -->|No| C{Role?}
+    C -->|Sales Rep| D{assigned_rep_id<br/>= them?}
+    C -->|Tele Caller| E{creator or<br/>tele_caller_id?}
+    C -->|Documentation Head| F{Site visit complete<br/>and not Lost?}
+    C -->|Documentation user| G{Assigned to them<br/>or holds doc task?}
+    C -->|Installer| H{Lead is Won?}
+    C -->|Partner| I{partner_id<br/>= them?}
+    D -->|Yes| OK
+    E -->|Yes| OK
+    F -->|Yes| OK
+    G -->|Yes| OK
+    H -->|Yes| OK
+    I -->|Yes| OK
+    D & E & F & G & H & I -->|No| DENY([403 Access denied])
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#0f172a
+    classDef no fill:#fee2e2,stroke:#dc2626,color:#0f172a
+    class OK ok
+    class DENY no

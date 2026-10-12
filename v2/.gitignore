@@ -1,0 +1,15 @@
+# Live credentials — never commit. Copy config/db.example.php to config/db.php
+# on each environment and fill in the real values there.
+config/db.php
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Runtime artefacts
+*.log
+uploads/
+_old/

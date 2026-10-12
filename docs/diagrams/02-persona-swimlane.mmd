@@ -1,0 +1,49 @@
+flowchart LR
+    subgraph TC[TELE CALLER]
+        T1[Create lead]
+        T2[Qualify customer]
+        T3{Outcome}
+        T4[Arranged Site Visit<br/>+ date]
+        T5[Lead Lost<br/>+ reason]
+    end
+    subgraph SR[SALES REP]
+        S1[Conduct site visit<br/>GPS check-in/out]
+        S2[Prepare quotation]
+        S3{Close}
+        S4[Mark Won<br/>+ document checklist]
+        S5[Mark Lost<br/>+ reason]
+    end
+    subgraph MG[MANAGER]
+        M1[Assign rep / tele caller]
+        M2[Reveal phone to rep]
+        M3[Task Review + Lead Review]
+    end
+    subgraph OM[OPERATION MANAGER]
+        O1[Record finances<br/>collect advance]
+        O2[Feasibility certificate]
+        O3[Bank documents]
+        O4[Schedule installation<br/>assign installer]
+    end
+    subgraph DOC[DOCUMENTATION]
+        D1[Collect Aadhar]
+        D2[Registered mobile]
+        D3[KSEB bill]
+        D4[Bank pass book]
+    end
+    subgraph INS[INSTALLER]
+        I1[Complete installation]
+    end
+
+    T1 --> M1
+    T2 --> T3
+    T3 --> T4 --> S1
+    T3 --> T5
+    M1 --> S1
+    M2 -.-> S1
+    S1 --> S2 --> S3
+    S3 --> S4 --> O1
+    S3 --> S5
+    O1 --> O2 --> O3 --> O4 --> I1
+    S4 -.-> D1
+    D1 --> D2 --> D3 --> D4
+    I1 --> M3

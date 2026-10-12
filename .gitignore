@@ -1,0 +1,20 @@
+# Live credentials — never commit. Copy db.example.php to db.php on each
+# environment and fill in the real values there. v1 and v2 each have their own.
+config/db.php
+v2/config/db.php
+
+# Claude Code's per-machine settings: these carry an allowlist of literal
+# shell commands, which in practice means credentials.
+**/settings.local.json
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Runtime artefacts
+*.log
+uploads/
+_old/
