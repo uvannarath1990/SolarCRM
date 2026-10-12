@@ -79,8 +79,21 @@ class LeadDetailController
             "SELECT `id`,`name` FROM `users` WHERE `role`='documentation' AND `is_active`=1 ORDER BY `name`"
         )->fetchAll();
 
+        // Uploaded files. Shown on this page too, because the sales rep with the
+        // customer in front of them is often the one who can photograph a
+        // document — not only the documentation team.
+        $docs = $this->pdo->prepare(
+            "SELECT ld.*, u.`name` AS uploader_name
+               FROM `lead_documents` ld
+               LEFT JOIN `users` u ON u.`id` = ld.`uploaded_by`
+              WHERE ld.`lead_id` = ? AND ld.`deleted_at` IS NULL
+              ORDER BY ld.`created_at` DESC"
+        );
+        $docs->execute([$leadId]);
+        $documents = $docs->fetchAll();
+
         $pageTitle = $lead['name'];
-        $extraJs   = ['lead-detail.js'];
+        $extraJs   = ['lead-detail.js', 'doc-upload.js'];
         require __DIR__ . '/../views/leads/detail.php';
     }
 
@@ -508,9 +521,14 @@ class LeadDetailController
     private function fetchAuditLog(int $leadId): array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT al.*, u.`name` AS user_name
+            'SELECT al.*, u.`name` AS user_name, wt.`title` AS task_title
              FROM `audit_log` al
              LEFT JOIN `users` u ON u.`id` = al.`user_id`
+             -- entity is "workflow_task:123" for task rows; pull the title so the
+             -- trail names the task rather than leaving a bare id.
+             LEFT JOIN `workflow_tasks` wt
+                    ON al.`entity` LIKE \'workflow_task:%\'
+                   AND wt.`id` = CAST(SUBSTRING(al.`entity`, 15) AS UNSIGNED)
              WHERE al.`lead_id` = ?
              ORDER BY al.`created_at` DESC
              LIMIT 200'

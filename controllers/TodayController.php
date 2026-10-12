@@ -64,6 +64,17 @@ class TodayController
         }
 
         $pageTitle = 'Today';
+
+        // A manager's Today is a different job from a rep's. Showing them the
+        // rep queue meant 199 red cards — every open task in the business — which
+        // is a firehose, not a to-do list. They get the shape of the backlog and
+        // who is carrying it instead.
+        if (in_array($role, ['admin', 'manager', 'operation_manager'], true)) {
+            $overview = $this->buildManagerOverview($userId);
+            require __DIR__ . '/../views/today/manager.php';
+            return;
+        }
+
         require __DIR__ . '/../views/today/index.php';
     }
 
@@ -296,5 +307,74 @@ class TodayController
         }
 
         return [];
+    }
+
+    /**
+     * The manager view: where work is stuck and who is carrying it.
+     *
+     * Deliberately aggregate. The per-task list already exists in Task Review;
+     * what a manager cannot get anywhere today is the shape of the backlog.
+     */
+    private function buildManagerOverview(int $userId): array
+    {
+        $pdo = $this->pdo;
+
+        $base = "FROM `workflow_tasks` wt
+                 JOIN `leads` l ON l.`id` = wt.`lead_id`
+                 WHERE wt.`status`='pending' AND l.`deleted_at` IS NULL";
+
+        $totals = $pdo->query(
+            "SELECT COUNT(*) AS pending,
+                    SUM(wt.`due_date` < CURDATE()) AS overdue,
+                    SUM(wt.`assigned_to` IS NULL) AS unassigned,
+                    MAX(CASE WHEN wt.`assigned_to` IS NULL
+                             THEN DATEDIFF(CURDATE(), wt.`due_date`) END) AS unassigned_oldest
+             {$base}"
+        )->fetch() ?: [];
+
+        // Where the backlog sits. A pile at one stage is a process problem, not
+        // a person problem, and it reads completely differently.
+        $byStage = $pdo->query(
+            "SELECT wt.`stage`, COUNT(*) AS n,
+                    SUM(wt.`due_date` < CURDATE()) AS overdue
+             {$base}
+             GROUP BY wt.`stage`
+             HAVING overdue > 0
+             ORDER BY overdue DESC"
+        )->fetchAll();
+
+        // Own FROM clause rather than {$base}: this one needs the users join,
+        // and $base already ends in a WHERE.
+        $byOwner = $pdo->query(
+            "SELECT wt.`assigned_to` AS user_id,
+                    COALESCE(u.`name`, 'Unassigned') AS name,
+                    u.`role`,
+                    COUNT(*) AS n,
+                    SUM(wt.`due_date` < CURDATE()) AS overdue,
+                    MAX(CASE WHEN wt.`due_date` < CURDATE()
+                             THEN DATEDIFF(CURDATE(), wt.`due_date`) END) AS oldest_days
+             FROM `workflow_tasks` wt
+             JOIN `leads` l ON l.`id` = wt.`lead_id`
+             LEFT JOIN `users` u ON u.`id` = wt.`assigned_to`
+             WHERE wt.`status`='pending' AND l.`deleted_at` IS NULL
+             GROUP BY wt.`assigned_to`, u.`name`, u.`role`
+             HAVING overdue > 0
+             ORDER BY overdue DESC
+             LIMIT 12"
+        )->fetchAll();
+
+        // The manager's own queue, kept separate from the team's.
+        $mine = $pdo->prepare(
+            "SELECT COUNT(*) AS n, SUM(wt.`due_date` < CURDATE()) AS overdue
+             {$base} AND wt.`assigned_to` = ?"
+        );
+        $mine->execute([$userId]);
+
+        return [
+            'totals'  => $totals,
+            'byStage' => $byStage,
+            'byOwner' => $byOwner,
+            'mine'    => $mine->fetch() ?: ['n' => 0, 'overdue' => 0],
+        ];
     }
 }

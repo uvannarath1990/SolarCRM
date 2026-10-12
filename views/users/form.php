@@ -94,6 +94,49 @@ require __DIR__ . '/../layout/header.php';
                     <?php endforeach; ?>
                 </select>
             </div>
+            <?php
+            $__ws  = substr((string)($editUser['work_start'] ?? '09:00:00'), 0, 5);
+            $__we  = substr((string)($editUser['work_end']   ?? '19:00:00'), 0, 5);
+            $__wd  = array_filter(explode(',', (string)($editUser['work_days'] ?? '1,2,3,4,5,6')));
+            $__trk = (int)($editUser['track_location'] ?? 0) === 1;
+            $__dayNames = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 7 => 'Sun'];
+            ?>
+            <hr class="my-4">
+            <div class="mb-3">
+                <label class="form-label fw-semibold">Work hours and location</label>
+
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" role="switch"
+                           id="track_location" name="track_location" value="1" <?= $__trk ? 'checked' : '' ?>>
+                    <label class="form-check-label" for="track_location">
+                        Track location during work hours
+                        <span class="d-block text-muted small">
+                            For field staff. Positions outside the hours below are never stored.
+                        </span>
+                    </label>
+                </div>
+
+                <div class="row g-2 mb-3">
+                    <div class="col-6">
+                        <label class="form-label small text-muted mb-1" for="work_start">Starts</label>
+                        <input type="time" class="form-control" id="work_start" name="work_start" value="<?= htmlspecialchars($__ws) ?>">
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label small text-muted mb-1" for="work_end">Ends</label>
+                        <input type="time" class="form-control" id="work_end" name="work_end" value="<?= htmlspecialchars($__we) ?>">
+                    </div>
+                </div>
+
+                <label class="form-label small text-muted mb-1">Working days</label>
+                <div class="d-flex flex-wrap gap-2">
+                    <?php foreach ($__dayNames as $__n => $__lbl): ?>
+                    <input type="checkbox" class="btn-check" name="work_days[]" value="<?= $__n ?>"
+                           id="wd<?= $__n ?>" <?= in_array((string)$__n, $__wd, true) ? 'checked' : '' ?>>
+                    <label class="btn btn-sm btn-outline-secondary" for="wd<?= $__n ?>"><?= $__lbl ?></label>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+
             <div class="mb-4">
                 <label class="form-label fw-semibold" for="password">
                     Password <?= $editId ? '<span class="text-muted fw-normal">(leave blank to keep current)</span>' : '<span class="text-danger">*</span>' ?>

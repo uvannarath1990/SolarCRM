@@ -1,160 +1,207 @@
-<?php require __DIR__ . '/../layout/header.php'; ?>
+<?php
+// ── Lead detail ─────────────────────────────────────────────────────────────
+// Restructured for v2: the next action is stated at the top, stage and assign
+// controls collapse into one place, and the seven tabs become three groups.
+// No endpoint, field name or permission rule changed.
 
-<div class="mt-3 mb-2">
-    <div class="d-flex align-items-center gap-2 mb-1">
-        <a href="<?= BASE_URL ?>/leads" class="btn btn-sm btn-outline-secondary flex-shrink-0"><i class="bi bi-arrow-left"></i></a>
-        <h5 class="mb-0 fw-bold text-truncate"><?= htmlspecialchars($lead['name']) ?></h5>
-        <span class="badge <?= stageBadgeClass($lead['stage']) ?> flex-shrink-0" id="stageBadge"><?= htmlspecialchars($lead['stage']) ?></span>
-        <?php if (hasRole('admin')): ?>
-        <button id="deleteLeadBtn" class="btn btn-sm btn-outline-danger ms-auto flex-shrink-0"
-                data-id="<?= $lead['id'] ?>">
-            <i class="bi bi-trash"></i>
-        </button>
-        <?php endif; ?>
+$pageTitle = $lead['name'];
+$pageSub   = '#' . $lead['id'] . ' · ' . $lead['stage'];
+$backLink  = BASE_URL . '/leads';
+
+$canPhone  = $lead['phone'] && canSeePhone($lead);
+$dial      = $canPhone ? preg_replace('/[^0-9+]/', '', $lead['phone']) : '';
+
+// The single most useful thing on this page: what is pending right now.
+$nextTask = null;
+foreach (($workflowTasks ?? []) as $__t) {
+    if (($__t['status'] ?? '') === 'pending') {
+        if ($nextTask === null
+            || (!empty($__t['due_date']) && (empty($nextTask['due_date']) || $__t['due_date'] < $nextTask['due_date']))) {
+            $nextTask = $__t;
+        }
+    }
+}
+
+require __DIR__ . '/../layout/header.php';
+?>
+
+<div class="lead-hero">
+    <div class="lh-top">
+        <div class="min-w-0" style="flex:1">
+            <h1><?= htmlspecialchars($lead['name']) ?></h1>
+            <div class="lh-facts">
+                <?php if (!empty($lead['location'])): ?>
+                <span><i class="bi bi-geo-alt"></i> <?= htmlspecialchars($lead['location']) ?></span>
+                <?php endif; ?>
+                <?php if (!empty($lead['potential_kw'])): ?>
+                <span><i class="bi bi-lightning-charge"></i> <?= htmlspecialchars((string) $lead['potential_kw']) ?> kW</span>
+                <?php endif; ?>
+                <?php if (!empty($lead['source'])): ?>
+                <span><i class="bi bi-tag"></i> <?= htmlspecialchars($lead['source']) ?></span>
+                <?php endif; ?>
+            </div>
+        </div>
+        <span class="badge stage-badge-lg <?= stageBadgeClass($lead['stage']) ?>" id="stageBadge"
+              style="flex:0 0 auto"><?= htmlspecialchars($lead['stage']) ?></span>
     </div>
-    <?php if (hasRole('admin', 'manager')): ?>
-    <?php $nextStages = allowedNextStages($lead['stage'], $_SESSION['role']); ?>
-    <?php if (!empty($nextStages)): ?>
-    <div class="d-flex gap-1 align-items-center stage-move-row mt-1" style="overflow-x:auto;padding-bottom:2px">
-        <small class="text-muted flex-shrink-0">Move to:</small>
-        <?php foreach ($nextStages as $ns): ?>
-        <button class="btn btn-sm btn-outline-secondary stage-move-btn py-0 px-2 flex-shrink-0"
-                data-stage="<?= htmlspecialchars($ns) ?>" style="font-size:.78rem">
-            <?= htmlspecialchars($ns) ?>
-        </button>
-        <?php endforeach; ?>
-        <span class="text-muted ms-2 flex-shrink-0" style="font-size:.78rem">or</span>
-        <select class="form-select form-select-sm py-0 flex-shrink-0" id="forceStageSelect" style="font-size:.78rem;width:auto;height:26px">
-            <option value="">Force set stage…</option>
-            <?php foreach (allStages() as $s): ?>
-            <?php if ($s !== $lead['stage']): ?>
-            <option value="<?= htmlspecialchars($s) ?>"><?= htmlspecialchars($s) ?></option>
-            <?php endif; ?>
-            <?php endforeach; ?>
-        </select>
-    </div>
-    <?php else: ?>
-    <div class="d-flex gap-1 align-items-center mt-1">
-        <small class="text-muted flex-shrink-0">Set stage:</small>
-        <select class="form-select form-select-sm py-0 flex-shrink-0" id="forceStageSelect" style="font-size:.78rem;width:auto;height:26px">
-            <option value="">Force set stage…</option>
-            <?php foreach (allStages() as $s): ?>
-            <?php if ($s !== $lead['stage']): ?>
-            <option value="<?= htmlspecialchars($s) ?>"><?= htmlspecialchars($s) ?></option>
-            <?php endif; ?>
-            <?php endforeach; ?>
-        </select>
-    </div>
-    <?php endif; ?>
-    <?php endif; // end admin/manager stage controls ?>
 
     <?php
-    // Sales rep: dedicated Won / Lost action buttons (no generic stage switching)
-    $srAllowedNext = allowedNextStages($lead['stage'], 'sales_rep');
-    $srCanWon  = in_array('Won',  $srAllowedNext, true);
-    $srCanLost = in_array('Lost', $srAllowedNext, true);
-    if (hasRole('sales_rep') && ($srCanWon || $srCanLost)):
+    // Where this lead sits in the pipeline. A corner badge alone made the stage
+    // easy to miss — this shows both the name and the distance travelled.
+    // Lost and On Hold are not points on the path, so they get a banner instead
+    // of a misleading progress bar.
+    $pipeline = ['New', 'Contacted', 'Visit Scheduled', 'Site Visit in Progress',
+                 'Site Visit Completed', 'Quoted', 'Won'];
+    $stageIdx = array_search($lead['stage'], $pipeline, true);
+    $offPath  = $stageIdx === false;
     ?>
-    <div class="d-flex gap-2 align-items-center mt-1">
-        <?php if ($srCanWon): ?>
-        <button class="btn btn-sm btn-success" id="markWonBtn">
-            <i class="bi bi-trophy me-1"></i>Mark Won
-        </button>
+    <div class="stage-strip">
+        <?php if ($offPath): ?>
+        <div class="ss-off <?= $lead['stage'] === 'Lost' ? 'is-lost' : 'is-hold' ?>">
+            <i class="bi bi-<?= $lead['stage'] === 'Lost' ? 'x-octagon-fill' : 'pause-circle-fill' ?>"></i>
+            <div>
+                <strong><?= htmlspecialchars($lead['stage']) ?></strong>
+                <?php if (!empty($lead['status_reason_code'])): ?>
+                — <?= htmlspecialchars($lead['status_reason_code']) ?>
+                <?php endif; ?>
+            </div>
+        </div>
+        <?php else: ?>
+        <div class="ss-head">
+            <span class="ss-now"><?= htmlspecialchars($lead['stage']) ?></span>
+            <span class="ss-step">Step <?= $stageIdx + 1 ?> of <?= count($pipeline) ?></span>
+            <?php if ($stageIdx < count($pipeline) - 1): ?>
+            <span class="ss-next">Next: <?= htmlspecialchars($pipeline[$stageIdx + 1]) ?></span>
+            <?php endif; ?>
+        </div>
+        <div class="ss-track">
+            <?php foreach ($pipeline as $i => $st): ?>
+            <span class="ss-seg <?= $i < $stageIdx ? 'done' : ($i === $stageIdx ? 'now' : '') ?>"
+                  title="<?= htmlspecialchars($st) ?>"></span>
+            <?php endforeach; ?>
+        </div>
         <?php endif; ?>
-        <?php if ($srCanLost): ?>
-        <button class="btn btn-sm btn-outline-danger" id="markLostBtn">
-            <i class="bi bi-x-circle me-1"></i>Mark Lost
-        </button>
-        <?php endif; ?>
+    </div>
+
+    <?php if ($canPhone): ?>
+    <div class="lh-contact" style="display:flex;gap:8px;margin-top:14px">
+        <a href="tel:<?= htmlspecialchars($dial, ENT_QUOTES, 'UTF-8') ?>" class="c-call"
+           style="flex:1;display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:11px;border-radius:var(--r-sm);font-size:14px;font-weight:650;min-height:46px;color:var(--ok);border:1.5px solid #A7F3D0;background:var(--ok-soft)">
+            <i class="bi bi-telephone-fill"></i>Call
+        </a>
+        <a href="https://wa.me/91<?= htmlspecialchars(preg_replace('/^(\+?91)/', '', $dial), ENT_QUOTES, 'UTF-8') ?>"
+           target="_blank" rel="noopener"
+           style="flex:1;display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:11px;border-radius:var(--r-sm);font-size:14px;font-weight:650;min-height:46px;color:#0B6B5E;border:1.5px solid #A7F3D0;background:#DCFCE7">
+            <i class="bi bi-whatsapp"></i>WhatsApp
+        </a>
+    </div>
+    <?php elseif (!empty($lead['phone'])): ?>
+    <div class="v2-flash v2-flash-warning" style="margin-top:14px">
+        <i class="bi bi-lock-fill"></i>
+        <div><?= htmlspecialchars(maskPhone($lead['phone'])) ?> — ask a manager to reveal this number.</div>
     </div>
     <?php endif; ?>
 </div>
 
-<!-- Pipeline stage bar -->
-<?php
-$allStagesList   = ['New','Contacted','Visit Scheduled','Site Visit in Progress',
-                    'Site Visit Completed','Quoted','Won'];
-$currentStageTop = $lead['stage'];
-$currentIdxTop   = array_search($currentStageTop, $allStagesList, true);
-?>
-<div class="mb-3">
-    <div class="d-flex align-items-center gap-0 pipeline-bar">
-    <?php foreach ($allStagesList as $i => $s):
-        $isDone    = $currentIdxTop !== false && $i < $currentIdxTop;
-        $isCurrent = $s === $currentStageTop;
-        $cls = $isDone ? 'done' : ($isCurrent ? 'current' : 'future');
-    ?>
-        <div class="pipeline-step <?= $cls ?>" title="<?= htmlspecialchars($s) ?>">
-            <div class="pipeline-dot">
-                <?php if ($isDone): ?><i class="bi bi-check-lg"></i>
-                <?php elseif ($isCurrent): ?><i class="bi bi-record-circle"></i>
-                <?php else: ?><i class="bi bi-circle"></i><?php endif; ?>
+<?php if ($nextTask): ?>
+<div class="task-prompt" style="margin-top:12px">
+    <div class="tp-k">Next step</div>
+    <div style="display:flex;align-items:center;gap:10px;margin-top:3px">
+        <div class="min-w-0" style="flex:1">
+            <div class="tp-v"><?= htmlspecialchars($nextTask['title']) ?></div>
+            <?php if (!empty($nextTask['due_date'])):
+                $__late = (int) floor((strtotime('today') - strtotime($nextTask['due_date'])) / 86400); ?>
+            <div class="tp-due <?= $__late > 0 ? 'overdue' : '' ?>">
+                Due <?= date('d M', strtotime($nextTask['due_date'])) ?><?= $__late > 0 ? ' · ' . $__late . ' day' . ($__late > 1 ? 's' : '') . ' late' : '' ?>
             </div>
-            <div class="pipeline-label"><?= htmlspecialchars($s) ?></div>
+            <?php endif; ?>
         </div>
-        <?php if ($i < count($allStagesList)-1): ?>
-        <div class="pipeline-connector <?= $isDone ? 'done' : '' ?>"></div>
-        <?php endif; ?>
-    <?php endforeach; ?>
-    </div>
-</div>
-
-<?php if (hasRole('admin', 'manager')): ?>
-<!-- Manager Action Panel -->
-<div class="card mb-3 border-primary">
-    <div class="card-header fw-semibold bg-white d-flex align-items-center gap-2">
-        <i class="bi bi-lightning-charge-fill text-primary"></i> Actions
-    </div>
-    <div class="card-body py-2">
-        <div class="d-flex flex-wrap gap-2">
-            <button class="btn btn-outline-primary btn-sm" data-bs-toggle="modal" data-bs-target="#modalTC">
-                <i class="bi bi-person-check me-1"></i>Assign Tele Caller
-            </button>
-            <button class="btn btn-outline-primary btn-sm" data-bs-toggle="modal" data-bs-target="#modalSR">
-                <i class="bi bi-person-badge me-1"></i>Assign Sales Rep
-            </button>
-            <button class="btn btn-outline-primary btn-sm" data-bs-toggle="modal" data-bs-target="#modalDoc">
-                <i class="bi bi-file-earmark-text me-1"></i>Start Documentation
-            </button>
-        </div>
+        <a href="<?= BASE_URL ?>/workflow/detail?id=<?= (int) $nextTask['id'] ?>"
+           style="flex:0 0 auto;padding:10px 20px;border-radius:var(--r-sm);background:var(--brand);color:#fff;font-weight:700;font-size:14px;white-space:nowrap">Act</a>
     </div>
 </div>
 <?php endif; ?>
 
-<!-- Quick action buttons -->
-<div class="mb-3 d-flex gap-2 flex-wrap align-items-center">
-    <?php if ($lead['phone']): ?>
-    <?php if (canSeePhone($lead)): ?>
-    <a href="tel:<?= htmlspecialchars($lead['phone']) ?>" class="btn btn-sm btn-outline-success">
-        <i class="bi bi-telephone me-1"></i>Call
-    </a>
-    <a href="https://wa.me/<?= preg_replace('/\D/', '', $lead['phone']) ?>" target="_blank" class="btn btn-sm btn-outline-success">
-        <i class="bi bi-whatsapp me-1"></i>WhatsApp
-    </a>
-    <?php else: ?>
-    <span class="btn btn-sm btn-outline-secondary disabled">
-        <i class="bi bi-lock me-1"></i><?= htmlspecialchars(maskPhone($lead['phone'])) ?>
-    </span>
-    <small class="text-muted">Contact manager to reveal phone</small>
-    <?php endif; ?>
-    <?php if (hasRole('admin', 'manager')): ?>
-    <button class="btn btn-sm <?= $lead['phone_revealed'] ? 'btn-warning' : 'btn-outline-warning' ?>"
-            id="phoneRevealBtn" title="<?= $lead['phone_revealed'] ? 'Hide phone from sales rep' : 'Reveal phone to sales rep' ?>">
-        <i class="bi bi-<?= $lead['phone_revealed'] ? 'eye-slash' : 'eye' ?> me-1"></i>
-        <?= $lead['phone_revealed'] ? 'Hide from Rep' : 'Reveal to Rep' ?>
+<!-- ── Things you can do ────────────────────────────────────────────────── -->
+<?php
+$srAllowedNext = allowedNextStages($lead['stage'], 'sales_rep');
+$srCanWon      = in_array('Won',  $srAllowedNext, true);
+$srCanLost     = in_array('Lost', $srAllowedNext, true);
+$isMgr         = hasRole('admin', 'manager');
+$nextStages    = $isMgr ? allowedNextStages($lead['stage'], $_SESSION['role']) : [];
+?>
+
+<div class="action-row">
+    <button class="v2-btn v2-btn-sm" id="createFollowUpBtn">
+        <i class="bi bi-calendar-plus"></i>Follow-up
     </button>
-    <?php endif; ?>
-    <?php endif; ?>
     <?php if (hasRole('admin','sales_rep') && in_array($lead['stage'], ['Visit Scheduled','Site Visit in Progress'], true)): ?>
-    <a href="<?= BASE_URL ?>/site-visits/view?lead_id=<?= $lead['id'] ?>" class="btn btn-sm btn-primary">
-        <i class="bi bi-geo-alt me-1"></i>Site Visit
+    <a href="<?= BASE_URL ?>/site-visits/view?lead_id=<?= $lead['id'] ?>" class="v2-btn v2-btn-sm tone-brand">
+        <i class="bi bi-geo-alt-fill"></i>Site Visit
     </a>
     <?php endif; ?>
-    <?php // Anyone who can open this lead can raise a follow-up on it ?>
-    <button class="btn btn-sm btn-outline-primary" id="createFollowUpBtn">
-        <i class="bi bi-calendar-plus me-1"></i>Create Follow-up
+    <?php if (hasRole('sales_rep') && $srCanWon): ?>
+    <button class="v2-btn v2-btn-sm tone-ok" id="markWonBtn">
+        <i class="bi bi-trophy-fill"></i>Mark Won
     </button>
+    <?php endif; ?>
+    <?php if (hasRole('sales_rep') && $srCanLost): ?>
+    <button class="v2-btn v2-btn-sm tone-danger" id="markLostBtn">
+        <i class="bi bi-x-circle-fill"></i>Mark Lost
+    </button>
+    <?php endif; ?>
 </div>
+
+<?php if ($isMgr): ?>
+<details class="v2-card" style="margin-top:16px;padding:14px">
+    <summary style="font-weight:700;font-size:14px;cursor:pointer">Manage this lead</summary>
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
+        <button class="v2-btn v2-btn-sm" data-bs-toggle="modal" data-bs-target="#modalTC" >
+            <i class="bi bi-person-check"></i>Tele Caller
+        </button>
+        <button class="v2-btn v2-btn-sm" data-bs-toggle="modal" data-bs-target="#modalSR" >
+            <i class="bi bi-person-badge"></i>Sales Rep
+        </button>
+        <button class="v2-btn v2-btn-sm" data-bs-toggle="modal" data-bs-target="#modalDoc" >
+            <i class="bi bi-file-earmark-text"></i>Documentation
+        </button>
+        <?php if (!empty($lead['phone'])): ?>
+        <button class="v2-btn v2-btn-sm" id="phoneRevealBtn">
+            <i class="bi bi-<?= $lead['phone_revealed'] ? 'eye-slash' : 'eye' ?>"></i>
+            <?= $lead['phone_revealed'] ? 'Hide from rep' : 'Reveal to rep' ?>
+        </button>
+        <?php endif; ?>
+    </div>
+
+    <div style="margin-top:16px">
+        <label class="text-muted-2" style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;display:block;margin-bottom:7px">Move stage</label>
+        <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center">
+            <?php foreach ($nextStages as $ns): ?>
+            <button class="stage-move-btn pill pill-stage" data-stage="<?= htmlspecialchars($ns) ?>"
+                    style="border:1px solid var(--line-2);padding:8px 13px;font-size:13px;background:var(--surface);cursor:pointer">
+                <?= htmlspecialchars($ns) ?>
+            </button>
+            <?php endforeach; ?>
+            <select class="v2-input" id="forceStageSelect" style="flex:1 1 180px;min-height:42px;padding:9px 11px;font-size:13.5px">
+                <option value="">Force set stage…</option>
+                <?php foreach (allStages() as $s2): ?>
+                <?php if ($s2 !== $lead['stage']): ?>
+                <option value="<?= htmlspecialchars($s2) ?>"><?= htmlspecialchars($s2) ?></option>
+                <?php endif; ?>
+                <?php endforeach; ?>
+            </select>
+        </div>
+    </div>
+
+    <?php if (hasRole('admin')): ?>
+    <button class="v2-btn v2-btn-ghost" id="deleteLeadBtn" data-id="<?= $lead['id'] ?>"
+            style="margin-top:16px;color:var(--danger);border-color:#FECACA">
+        <i class="bi bi-trash"></i>Delete this lead
+    </button>
+    <?php endif; ?>
+</details>
+<?php endif; ?>
 
 <!-- ── Create follow-up ────────────────────────────────────────────────────── -->
 <div class="modal fade" id="followUpModal" tabindex="-1" aria-hidden="true">
@@ -204,12 +251,56 @@ $currentIdxTop   = array_search($currentStageTop, $allStagesList, true);
   </div>
 </div>
 
-<div class="row g-3">
+<div class="row g-3 lead-cols">
 <!-- LEFT: Edit form -->
 <div class="col-lg-7">
-<div class="card">
-    <div class="card-header fw-semibold bg-white">Lead Details</div>
-    <div class="card-body">
+<?php
+// Read first, edit second. The form below is unchanged — it just starts closed,
+// with the same values shown as a plain list until someone chooses to edit.
+$__rep  = $lead['rep_name']  ?? null;
+$__tele = $lead['tele_name'] ?? ($lead['creator_name'] ?? null);
+?>
+<div class="v2-card" style="padding:16px">
+    <div class="v2-section" style="margin-top:0">
+        <h2>Details</h2>
+        <span class="rule"></span>
+        <button type="button" class="pill pill-info" id="toggleEditBtn" style="border:0;cursor:pointer">
+            <i class="bi bi-pencil"></i> Edit
+        </button>
+    </div>
+
+    <table class="fact-list" id="leadFactList">
+        <?php if (!empty($lead['phone'])): ?>
+        <tr><td class="k">Phone</td><td class="v"><?= htmlspecialchars(canSeePhone($lead) ? $lead['phone'] : maskPhone($lead['phone'])) ?></td></tr>
+        <?php endif; ?>
+        <?php if (!empty($lead['email'])): ?>
+        <tr><td class="k">Email</td><td class="v"><?= htmlspecialchars($lead['email']) ?></td></tr>
+        <?php endif; ?>
+        <?php if (!empty($lead['location'])): ?>
+        <tr><td class="k">Location</td><td class="v"><?= htmlspecialchars($lead['location']) ?></td></tr>
+        <?php endif; ?>
+        <?php if (!empty($lead['quote_amount'])): ?>
+        <tr><td class="k">Quote</td><td class="v"><?= formatCurrency((float) $lead['quote_amount']) ?></td></tr>
+        <?php endif; ?>
+        <?php if ($__rep): ?>
+        <tr><td class="k">Sales rep</td><td class="v"><?= htmlspecialchars($__rep) ?></td></tr>
+        <?php endif; ?>
+        <tr>
+            <td class="k">Next follow-up</td>
+            <td class="v">
+                <?php if (!empty($lead['next_followup_date'])):
+                    $__od = $lead['next_followup_date'] < date('Y-m-d') && !in_array($lead['stage'], ['Won','Lost'], true); ?>
+                    <i class="bi bi-lock-fill" style="color:var(--muted-2);font-size:12px"></i>
+                    <span <?= $__od ? 'style="color:var(--danger)"' : '' ?>><?= formatDate($lead['next_followup_date']) ?><?= $__od ? ' · overdue' : '' ?></span>
+                <?php else: ?>
+                    <span class="text-muted-2">—</span>
+                <?php endif; ?>
+            </td>
+        </tr>
+        <tr><td class="k">Created</td><td class="v"><?= formatDate($lead['created_at']) ?> · <?= htmlspecialchars($lead['creator_name'] ?? '—') ?></td></tr>
+    </table>
+
+    <div id="leadEditWrap" hidden style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
         <form method="POST" action="<?= BASE_URL ?>/leads/detail/save" novalidate class="lead-detail-form">
             <?= csrfField() ?>
             <input type="hidden" name="lead_id" value="<?= $lead['id'] ?>">
@@ -418,18 +509,7 @@ $currentIdxTop   = array_search($currentStageTop, $allStagesList, true);
 </div>
 </div>
 
-<!-- RIGHT: Meta info -->
 <div class="col-lg-5">
-    <div class="card mb-3">
-        <div class="card-body small">
-            <div class="row g-2">
-                <div class="col-6"><span class="text-muted">Created by</span><br><strong><?= htmlspecialchars($lead['creator_name'] ?? '—') ?></strong></div>
-                <div class="col-6"><span class="text-muted">Created on</span><br><strong><?= formatDate($lead['created_at']) ?></strong></div>
-                <div class="col-6"><span class="text-muted">Lead ID</span><br><strong>#<?= $lead['id'] ?></strong></div>
-                <div class="col-6"><span class="text-muted">Last updated</span><br><strong><?= formatDateTime($lead['updated_at']) ?></strong></div>
-            </div>
-        </div>
-    </div>
 
     <?php
     // ── Documents ────────────────────────────────────────────────────────────
@@ -438,75 +518,59 @@ $currentIdxTop   = array_search($currentStageTop, $allStagesList, true);
     $docsComplete = $lead['doc_aadhar'] && $lead['doc_registered_mobile']
                  && $lead['doc_kseb_bill'] && $lead['doc_bank_passbook'];
     ?>
-    <div class="card mb-3">
-        <div class="card-header bg-white d-flex justify-content-between align-items-center">
-            <span class="fw-semibold"><i class="bi bi-folder2-open me-1"></i>Documents</span>
-            <?php if ($docsComplete): ?>
-            <span class="badge bg-success-subtle text-success border border-success-subtle">
-                <i class="bi bi-check-circle-fill me-1"></i>Complete
+    <?php
+    // One definition, four rows — the checkbox ids and field names are unchanged,
+    // so the existing save handler keeps working untouched.
+    $docRows = [
+        ['aadhar',   'doc_aadhar',            'Aadhar',          'doc_aadhar_number',   'Aadhar number (12 digits)',          'numeric', 14],
+        ['mobile',   'doc_registered_mobile', 'Registered mobile','doc_mobile_number',   'Mobile number (10 digits)',          'numeric', 12],
+        ['kseb',     'doc_kseb_bill',         'KSEB bill',       'doc_kseb_consumer_no','KSEB consumer number',               'text',    40],
+        ['passbook', 'doc_bank_passbook',     'Bank pass book',  'doc_bank_account_no', 'Bank account number',                'text',    40],
+    ];
+    $docsDone = 0;
+    foreach ($docRows as $r) if (!empty($lead[$r[1]])) $docsDone++;
+    ?>
+    <div class="v2-card" style="padding:16px">
+        <div class="v2-section" style="margin-top:0">
+            <h2>Documents</h2>
+            <span class="rule"></span>
+            <span class="pill <?= $docsComplete ? 'pill-ok' : 'pill-muted' ?>">
+                <?= $docsComplete ? '<i class="bi bi-check-circle-fill"></i> Complete' : $docsDone . ' of ' . count($docRows) ?>
             </span>
-            <?php else: ?>
-            <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle">Incomplete</span>
-            <?php endif; ?>
         </div>
-        <div class="card-body">
-            <div class="mb-3">
-                <div class="form-check">
-                    <input class="form-check-input" type="checkbox" id="dv-aadhar-chk"
-                           <?= $lead['doc_aadhar'] ? 'checked' : '' ?> <?= $docsEditable ? '' : 'disabled' ?>>
-                    <label class="form-check-label fw-semibold small" for="dv-aadhar-chk">Aadhar received</label>
-                </div>
-                <input type="text" class="form-control form-control-sm mt-1" id="dv-aadhar-num"
-                       placeholder="Aadhar number (12 digits)" inputmode="numeric" maxlength="14"
-                       value="<?= htmlspecialchars($lead['doc_aadhar_number'] ?? '') ?>"
-                       <?= $docsEditable ? '' : 'disabled' ?>>
-            </div>
 
-            <div class="mb-3">
-                <div class="form-check">
-                    <input class="form-check-input" type="checkbox" id="dv-mobile-chk"
-                           <?= $lead['doc_registered_mobile'] ? 'checked' : '' ?> <?= $docsEditable ? '' : 'disabled' ?>>
-                    <label class="form-check-label fw-semibold small" for="dv-mobile-chk">Registered mobile received</label>
-                </div>
-                <input type="text" class="form-control form-control-sm mt-1" id="dv-mobile-num"
-                       placeholder="Registered mobile number (10 digits)" inputmode="numeric" maxlength="12"
-                       value="<?= htmlspecialchars($lead['doc_mobile_number'] ?? '') ?>"
-                       <?= $docsEditable ? '' : 'disabled' ?>>
-            </div>
-
-            <div class="mb-3">
-                <div class="form-check">
-                    <input class="form-check-input" type="checkbox" id="dv-kseb-chk"
-                           <?= $lead['doc_kseb_bill'] ? 'checked' : '' ?> <?= $docsEditable ? '' : 'disabled' ?>>
-                    <label class="form-check-label fw-semibold small" for="dv-kseb-chk">KSEB bill received</label>
-                </div>
-                <input type="text" class="form-control form-control-sm mt-1" id="dv-kseb-num"
-                       placeholder="KSEB consumer number" maxlength="40"
-                       value="<?= htmlspecialchars($lead['doc_kseb_consumer_no'] ?? '') ?>"
-                       <?= $docsEditable ? '' : 'disabled' ?>>
-            </div>
-
-            <div class="mb-3">
-                <div class="form-check">
-                    <input class="form-check-input" type="checkbox" id="dv-passbook-chk"
-                           <?= $lead['doc_bank_passbook'] ? 'checked' : '' ?> <?= $docsEditable ? '' : 'disabled' ?>>
-                    <label class="form-check-label fw-semibold small" for="dv-passbook-chk">Bank pass book received</label>
-                </div>
-                <input type="text" class="form-control form-control-sm mt-1" id="dv-passbook-num"
-                       placeholder="Bank account number" maxlength="40"
-                       value="<?= htmlspecialchars($lead['doc_bank_account_no'] ?? '') ?>"
-                       <?= $docsEditable ? '' : 'disabled' ?>>
-            </div>
-
-            <?php if ($docsEditable): ?>
-            <button class="btn btn-sm btn-primary w-100" id="saveDocsBtn">
-                <i class="bi bi-save me-1"></i>Save Documents
-            </button>
-            <?php else: ?>
-            <div class="text-muted small"><i class="bi bi-lock me-1"></i>You cannot edit documents on this lead.</div>
-            <?php endif; ?>
+        <?php foreach ($docRows as [$key, $flagCol, $label, $numCol, $placeholder, $mode, $maxLen]):
+            $has = !empty($lead[$flagCol]); ?>
+        <div class="doc-row">
+            <label class="doc-check">
+                <input type="checkbox" id="dv-<?= $key ?>-chk"
+                       <?= $has ? 'checked' : '' ?> <?= $docsEditable ? '' : 'disabled' ?>>
+                <span><?= htmlspecialchars($label) ?></span>
+            </label>
+            <input type="text" class="v2-input doc-num" id="dv-<?= $key ?>-num"
+                   placeholder="<?= htmlspecialchars($placeholder) ?>"
+                   <?= $mode === 'numeric' ? 'inputmode="numeric"' : '' ?>
+                   maxlength="<?= (int) $maxLen ?>"
+                   value="<?= htmlspecialchars($lead[$numCol] ?? '') ?>"
+                   <?= $docsEditable ? '' : 'disabled' ?>>
         </div>
+        <?php endforeach; ?>
+
+        <?php if ($docsEditable): ?>
+        <button class="v2-btn v2-btn-primary" id="saveDocsBtn" style="margin-top:14px">
+            <i class="bi bi-check-lg"></i>Save documents
+        </button>
+        <?php else: ?>
+        <div class="text-muted-2" style="font-size:13px;margin-top:12px">
+            <i class="bi bi-lock-fill"></i> You cannot edit documents on this lead.
+        </div>
+        <?php endif; ?>
     </div>
+
+    <?php // The same uploader the documentation portal uses. Anyone who can open
+          // this lead can add files to it — usually the rep standing with the
+          // customer. See views/partials/documents_card.php ?>
+    <?php require __DIR__ . '/../partials/documents_card.php'; ?>
 </div>
 </div>
 
@@ -692,40 +756,77 @@ if (hasRole('sales_rep') && $srLostAllowed):
 $wfPending = count(array_filter($workflowTasks ?? [], fn($t) => $t['status'] === 'pending'));
 $wfStages  = array_unique(array_column($workflowTasks ?? [], 'stage'));
 ?>
-<ul class="nav nav-tabs nav-tabs-scroll" id="leadTabs">
-    <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tabPipeline">
-        <i class="bi bi-diagram-3 me-1"></i>Pipeline
-        <?php if ($wfPending > 0): ?>
-        <span class="badge bg-primary"><?= $wfPending ?></span>
-        <?php endif; ?>
-    </button></li>
-    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabActivities">
-        <i class="bi bi-chat-left-text me-1"></i>Activities <span class="badge bg-secondary"><?= count($activities) ?></span>
-    </button></li>
-
-    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabReminders">
-        <i class="bi bi-bell me-1"></i>Reminders <span class="badge bg-secondary"><?= count(array_filter($reminders, fn($r) => !$r['is_done'])) ?></span>
-    </button></li>
-    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabVisits">
-        <i class="bi bi-geo-alt me-1"></i>Site Visits <span class="badge bg-secondary"><?= count($siteVisits) ?></span>
-    </button></li>
-    <?php if ($lead['stage'] === 'Won'): ?>
-    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabOperations">
-        <i class="bi bi-tools me-1"></i>Operations <span class="badge bg-secondary"><?= count($operations) ?></span>
-    </button></li>
-    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabFinancials" id="tabFinancialsBtn">
-        <i class="bi bi-cash-stack me-1"></i>Financials
-    </button></li>
+<?php
+// Seven tabs collapsed into three groups. Each group simply shows a set of the
+// panes below — the panes themselves are unchanged, so nothing is lost.
+$histCount  = count($activities) + count(array_filter($reminders, fn($r) => !$r['is_done'])) + count($siteVisits);
+$showMoney  = $lead['stage'] === 'Won';
+?>
+<div class="lead-tabs" id="leadTabs">
+    <button type="button" class="lead-tab on" data-group="overview">
+        Overview<?php if ($wfPending > 0): ?> <span class="lt-n"><?= $wfPending ?></span><?php endif; ?>
+    </button>
+    <button type="button" class="lead-tab" data-group="history">
+        History<?php if ($histCount > 0): ?> <span class="lt-n"><?= $histCount ?></span><?php endif; ?>
+    </button>
+    <?php if ($showMoney): ?>
+    <button type="button" class="lead-tab" data-group="money" id="tabFinancialsBtn">Money</button>
     <?php endif; ?>
-    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabAudit">
-        <i class="bi bi-clock-history me-1"></i>Audit Trail
-    </button></li>
-</ul>
+</div>
 
 <div class="tab-content mt-2" id="leadTabContent">
 
     <!-- Pipeline tab -->
-    <div class="tab-pane fade show active" id="tabPipeline">
+    <script>
+(function () {
+    'use strict';
+
+    // This script sits above the panes in the document, so the panes do not
+    // exist yet at parse time — everything must wait for DOMContentLoaded.
+    function init() {
+
+    // Three groups, seven panes. Switching a group shows every pane in it.
+    var tabs  = document.querySelectorAll('.lead-tab');
+    var panes = document.querySelectorAll('.lead-pane');
+
+    tabs.forEach(function (tab) {
+        tab.addEventListener('click', function () {
+            var g = tab.dataset.group;
+            tabs.forEach(function (t) { t.classList.toggle('on', t === tab); });
+            panes.forEach(function (p) { p.classList.toggle('on', p.dataset.group === g); });
+        });
+    });
+
+    // Details start read-only; editing is a deliberate choice.
+    var toggle = document.getElementById('toggleEditBtn');
+    var wrap   = document.getElementById('leadEditWrap');
+    var list   = document.getElementById('leadFactList');
+    if (toggle && wrap) {
+        toggle.addEventListener('click', function () {
+            var editing = wrap.hasAttribute('hidden');
+            if (editing) {
+                wrap.removeAttribute('hidden');
+                if (list) list.style.display = 'none';
+                toggle.innerHTML = '<i class="bi bi-x-lg"></i> Cancel';
+            } else {
+                wrap.setAttribute('hidden', '');
+                if (list) list.style.display = '';
+                toggle.innerHTML = '<i class="bi bi-pencil"></i> Edit';
+            }
+        });
+    }
+
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
+})();
+</script>
+
+<div class="lead-pane on" data-group="overview" id="tabPipeline">
     <?php
     $allStages      = ['New','Contacted','Visit Scheduled','Site Visit in Progress',
                        'Site Visit Completed','Quoted','Won'];
@@ -883,7 +984,8 @@ $wfStages  = array_unique(array_column($workflowTasks ?? [], 'stage'));
     </div><!-- /#tabPipeline -->
 
     <!-- Activities tab -->
-    <div class="tab-pane fade" id="tabActivities">
+    <div class="lead-pane" data-group="history" id="tabActivities">
+        <div class="v2-section"><h2>Activities</h2><span class="rule"></span></div>
         <div class="card mb-3">
             <div class="card-body">
                 <form id="activityForm" class="row g-2 align-items-end">
@@ -929,7 +1031,8 @@ $wfStages  = array_unique(array_column($workflowTasks ?? [], 'stage'));
     </div>
 
     <!-- Reminders tab -->
-    <div class="tab-pane fade" id="tabReminders">
+    <div class="lead-pane" data-group="history" id="tabReminders">
+        <div class="v2-section"><h2>Reminders</h2><span class="rule"></span></div>
         <div class="card mb-3">
             <div class="card-body">
                 <form id="reminderForm" class="row g-2 align-items-end">
@@ -965,7 +1068,8 @@ $wfStages  = array_unique(array_column($workflowTasks ?? [], 'stage'));
     </div>
 
     <!-- Site Visits tab -->
-    <div class="tab-pane fade" id="tabVisits">
+    <div class="lead-pane" data-group="history" id="tabVisits">
+        <div class="v2-section"><h2>Site visits</h2><span class="rule"></span></div>
         <?php if (empty($siteVisitHistory ?? [])): ?>
         <p class="text-muted small">No site visit history recorded.</p>
         <?php else: ?>
@@ -1044,7 +1148,8 @@ $wfStages  = array_unique(array_column($workflowTasks ?? [], 'stage'));
 
     <!-- Operations tab (Won leads only) -->
     <?php if ($lead['stage'] === 'Won'): ?>
-    <div class="tab-pane fade" id="tabOperations">
+    <div class="lead-pane" data-group="money" id="tabOperations">
+        <div class="v2-section"><h2>Operations</h2><span class="rule"></span></div>
         <?php if (hasRole('admin', 'sales_rep')): ?>
         <div class="card mb-3">
             <div class="card-body">
@@ -1134,7 +1239,8 @@ $wfStages  = array_unique(array_column($workflowTasks ?? [], 'stage'));
         $finTotalPaid = array_sum(array_column($installments, 'amount'));
         $finBalance   = $finTotalAmt - $finDiscount - $finTotalPaid;
     ?>
-    <div class="tab-pane fade" id="tabFinancials">
+    <div class="lead-pane" data-group="money" id="tabFinancials">
+        <div class="v2-section"><h2>Financials</h2><span class="rule"></span></div>
 
         <!-- Summary cards -->
         <div class="row g-2 mb-3" id="finSummary">
@@ -1295,11 +1401,12 @@ $wfStages  = array_unique(array_column($workflowTasks ?? [], 'stage'));
     <?php endif; ?>
 
     <!-- Audit trail tab -->
-    <div class="tab-pane fade" id="tabAudit">
+    <div class="lead-pane" data-group="history" id="tabAudit">
+        <div class="v2-section"><h2>Audit trail</h2><span class="rule"></span></div>
         <div class="table-responsive">
             <table class="table table-sm small">
                 <thead class="table-light">
-                    <tr><th>When</th><th>User</th><th>Action</th><th>Field</th><th>From</th><th>To</th></tr>
+                    <tr><th>When</th><th>User</th><th>Action</th><th>Task</th><th>Field</th><th>From</th><th>To</th></tr>
                 </thead>
                 <tbody>
                 <?php foreach ($auditLog as $entry): ?>
@@ -1307,13 +1414,20 @@ $wfStages  = array_unique(array_column($workflowTasks ?? [], 'stage'));
                     <td class="text-muted text-nowrap"><?= formatDateTime($entry['created_at']) ?></td>
                     <td><?= htmlspecialchars($entry['user_name'] ?? 'System') ?></td>
                     <td><span class="badge bg-light text-dark"><?= htmlspecialchars($entry['action']) ?></span></td>
+                    <td class="text-muted-2" style="font-size:12px">
+                        <?php // entity holds "workflow_task:123" — show the title so a row
+                              // identifies itself instead of just saying a task changed. ?>
+                        <?= !empty($entry['task_title'])
+                            ? htmlspecialchars($entry['task_title'])
+                            : '<span class="text-muted-2">—</span>' ?>
+                    </td>
                     <td class="text-muted"><?= htmlspecialchars($entry['field_name'] ?? '—') ?></td>
                     <td class="text-danger"><?= htmlspecialchars($entry['old_value'] ?? '—') ?></td>
                     <td class="text-success"><?= htmlspecialchars($entry['new_value'] ?? '—') ?></td>
                 </tr>
                 <?php endforeach; ?>
                 <?php if (empty($auditLog)): ?>
-                <tr><td colspan="6" class="text-muted text-center py-3">No audit entries.</td></tr>
+                <tr><td colspan="7" class="text-muted text-center py-3">No audit entries.</td></tr>
                 <?php endif; ?>
                 </tbody>
             </table>
@@ -1592,8 +1706,8 @@ function attachInstDeleteBtn(btn) {
 
 // Auto-open Financials tab if URL hash matches
 if (window.location.hash === '#tabFinancials') {
-    const btn = document.getElementById('tabFinancialsBtn');
-    if (btn) btn.click();
+    // Deep link from Payments still lands on the money group.
+    document.getElementById('tabFinancialsBtn')?.click();
 }
 </script>
 <?php endif; ?>
@@ -1769,6 +1883,11 @@ document.getElementById('deleteLeadBtn')?.addEventListener('click', async functi
           <div id="om-tc-reschedwrap" class="mb-3 d-none">
             <label class="form-label">Call again on <span class="text-danger">*</span></label>
             <input type="date" class="form-control" id="om-tc-resched-date" min="<?= date('Y-m-d') ?>">
+
+            <label class="form-label mt-3">What did they say?</label>
+            <textarea class="form-control" id="om-tc-resched-note" rows="3" maxlength="2000"
+                      placeholder="e.g. Comparing quotes, wants to decide after Onam. Ask for wife."></textarea>
+            <small class="text-muted">Optional — shown to whoever makes the next call.</small>
           </div>
           <div id="om-tc-svdate" class="mb-3 d-none">
             <label class="form-label">Site Visit Date <span class="text-danger">*</span></label>
@@ -1789,7 +1908,8 @@ document.getElementById('deleteLeadBtn')?.addEventListener('click', async functi
         <div id="om-sr" class="d-none">
           <label class="form-label fw-semibold">Outcome</label>
           <div class="mb-3">
-            <?php foreach (['Site Visit Pending', 'Site Visit Postponed', 'Lead Lost', 'Lead Won'] as $opt): ?>
+            <?php foreach (['Site Visit Pending', 'Site Visit Postponed', 'Follow Up Again',
+                            'Lead Lost', 'Lead Won'] as $opt): ?>
             <div class="form-check">
               <input class="form-check-input om-outcome-sr" type="radio" name="om_outcome_sr"
                      value="<?= $opt ?>"
@@ -1802,7 +1922,7 @@ document.getElementById('deleteLeadBtn')?.addEventListener('click', async functi
             <?php endforeach; ?>
           </div>
           <div id="om-sr-nextdate" class="mb-3 d-none">
-            <label class="form-label">Next Site Visit Date <span class="text-danger">*</span></label>
+            <label class="form-label" id="om-sr-datelabel">Next date <span class="text-danger">*</span></label>
             <input type="date" class="form-control" id="om-next-visit-date">
           </div>
           <div id="om-sr-lost-reason" class="mb-3 d-none">
@@ -1837,6 +1957,25 @@ document.getElementById('deleteLeadBtn')?.addEventListener('click', async functi
                    placeholder="e.g. 250000">
             <div class="form-text">Saved on the lead and moves it to <strong>Quoted</strong>,
               creating the follow-up task automatically.</div>
+
+            <?php // Ticking a box only ever records a document as received; it
+                  // never clears one already on file. ?>
+            <label class="form-label mt-3">Documents collected today</label>
+            <div class="d-flex flex-wrap gap-2">
+              <?php foreach (['aadhar' => 'Aadhar', 'mobile' => 'Registered mobile',
+                              'kseb' => 'KSEB bill', 'passbook' => 'Bank pass book'] as $dk => $dl): ?>
+              <div class="form-check">
+                <input class="form-check-input om-svs-doc" type="checkbox"
+                       value="<?= $dk ?>" id="om-svs-doc-<?= $dk ?>">
+                <label class="form-check-label small" for="om-svs-doc-<?= $dk ?>"><?= $dl ?></label>
+              </div>
+              <?php endforeach; ?>
+            </div>
+
+            <label class="form-label mt-3" for="om-svs-followup">When will you follow up?</label>
+            <input type="date" class="form-control" id="om-svs-followup"
+                   min="<?= date('Y-m-d') ?>">
+            <div class="form-text">Leave blank to follow up today.</div>
           </div>
           <div id="om-svs-nextdate" class="mb-3 d-none">
             <label class="form-label">New Visit Date <span class="text-danger">*</span></label>
@@ -1955,7 +2094,10 @@ document.querySelectorAll('.om-outcome').forEach(r => {
 // SR conditional fields
 document.querySelectorAll('.om-outcome-sr').forEach(r => {
     r.addEventListener('change', function () {
-        document.getElementById('om-sr-nextdate').classList.toggle('d-none', this.value !== 'Site Visit Postponed');
+        // Both of these need a date — postponing a visit, or simply agreeing
+        // to speak again later.
+        document.getElementById('om-sr-nextdate').classList.toggle(
+            'd-none', this.value !== 'Site Visit Postponed' && this.value !== 'Follow Up Again');
         document.getElementById('om-sr-lost-reason').classList.toggle('d-none', this.value !== 'Lead Lost');
     });
 });
@@ -1964,7 +2106,8 @@ document.querySelectorAll('.om-outcome-sr').forEach(r => {
 document.querySelectorAll('.om-outcome-svs').forEach(r => {
     r.addEventListener('change', function () {
         document.getElementById('om-svs-quote').classList.toggle('d-none', this.value !== 'Site Visit Completed');
-        document.getElementById('om-svs-nextdate').classList.toggle('d-none', this.value !== 'Site Visit Rescheduled');
+        document.getElementById('om-svs-nextdate').classList.toggle(
+            'd-none', this.value !== 'Site Visit Rescheduled');
         document.getElementById('om-svs-lost').classList.toggle('d-none', this.value !== 'Lead Lost');
     });
 });
@@ -1999,14 +2142,21 @@ document.getElementById('om-submit').addEventListener('click', async function ()
         if (outcome === 'Reschedule Call') {
             body.outcome_next_visit_date = document.getElementById('om-tc-resched-date').value;
             if (!body.outcome_next_visit_date) { alert('Choose the date to call the customer again.'); return; }
+            const rnote = document.getElementById('om-tc-resched-note').value.trim();
+            if (rnote) body.outcome_note = rnote;
         }
     } else if (stage === 'New' && role === 'sales_rep') {
         const outcome = document.querySelector('.om-outcome-sr:checked')?.value;
         if (!outcome) { alert('Please select an outcome.'); return; }
         body.outcome = outcome;
-        if (outcome === 'Site Visit Postponed') {
+        if (outcome === 'Site Visit Postponed' || outcome === 'Follow Up Again') {
             body.outcome_next_visit_date = document.getElementById('om-next-visit-date').value;
-            if (!body.outcome_next_visit_date) { alert('Next Site Visit Date is required.'); return; }
+            if (!body.outcome_next_visit_date) {
+                alert(outcome === 'Follow Up Again'
+                    ? 'Choose the date to follow up on.'
+                    : 'Next Site Visit Date is required.');
+                return;
+            }
         }
         if (outcome === 'Lead Lost') {
             body.outcome_lost_reason = document.getElementById('om-sr-lost-reason-val').value;
@@ -2021,6 +2171,13 @@ document.getElementById('om-submit').addEventListener('click', async function ()
             if (!body.quote_amount || parseFloat(body.quote_amount) <= 0) {
                 alert('Quote amount is required to complete the site visit.'); return;
             }
+            // Both optional — a visit with neither is still a completed visit.
+            body.docs_received = [].slice.call(
+                document.querySelectorAll('.om-svs-doc:checked')
+            ).map(function (el) { return el.value; });
+
+            const fu = document.getElementById('om-svs-followup').value;
+            if (fu) body.outcome_next_visit_date = fu;
         }
         if (outcome === 'Site Visit Rescheduled') {
             body.outcome_next_visit_date = document.getElementById('om-svs-next-date').value;
@@ -2269,53 +2426,5 @@ async function amConfirm(btn, taskType, srcId, dateId) {
 }
 </script>
 
-<style>
-/* Pipeline progress bar */
-.pipeline-bar {
-    overflow-x: auto;
-    padding-bottom: .5rem;
-    scrollbar-width: thin;
-}
-.pipeline-step {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    min-width: 80px;
-    max-width: 100px;
-    flex-shrink: 0;
-    text-align: center;
-}
-.pipeline-dot {
-    width: 32px; height: 32px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 1rem;
-    font-weight: 700;
-}
-.pipeline-step.done    .pipeline-dot { background:#22c55e; color:#fff; }
-.pipeline-step.current .pipeline-dot { background:#3b82f6; color:#fff; box-shadow:0 0 0 3px #bfdbfe; }
-.pipeline-step.future  .pipeline-dot { background:#f1f5f9; color:#94a3b8; }
-
-.pipeline-label {
-    font-size: .6rem;
-    margin-top: 4px;
-    color: #64748b;
-    line-height: 1.2;
-}
-.pipeline-step.current .pipeline-label { color:#3b82f6; font-weight:600; }
-.pipeline-step.done    .pipeline-label { color:#22c55e; }
-
-.pipeline-connector {
-    height: 2px;
-    flex: 1;
-    background: #e2e8f0;
-    min-width: 16px;
-    margin-top: -16px;
-    flex-shrink: 0;
-}
-.pipeline-connector.done { background: #22c55e; }
-</style>
 
 <?php require __DIR__ . '/../layout/footer.php'; ?>

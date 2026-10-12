@@ -82,6 +82,8 @@ $routes = [
     'users/save'             => ['controllers/UsersController.php',        'UsersController',        'save'],
     'users/toggle-active'    => ['controllers/UsersController.php',        'UsersController',        'toggleActive'],
     'users/delete'           => ['controllers/UsersController.php',        'UsersController',        'delete'],
+    'users/tracking'         => ['controllers/UsersController.php',        'UsersController',        'tracking'],
+    'users/tracking/save'    => ['controllers/UsersController.php',        'UsersController',        'trackingSave'],
 
     // Tasks & notifications
     'tasks'                  => ['controllers/TasksController.php',        'TasksController',        'index'],
@@ -107,6 +109,11 @@ $routes = [
     'reports/tele-review'        => ['controllers/ReportsController.php', 'ReportsController', 'teleCallerReview'],
     'reports/tele-review/export' => ['controllers/ReportsController.php', 'ReportsController', 'teleCallerExport'],
 
+    // Location tracking
+    'location/ping'          => ['controllers/LocationController.php',     'LocationController',     'ping'],
+    'reports/team-map'       => ['controllers/LocationController.php',     'LocationController',     'teamMap'],
+    'api/team-locations'     => ['controllers/LocationController.php',     'LocationController',     'teamLocationsJson'],
+
     // Push notifications
     'push/subscribe'         => ['controllers/PushController.php',         'PushController',         'subscribe'],
     'push/unsubscribe'       => ['controllers/PushController.php',         'PushController',         'unsubscribe'],
@@ -120,9 +127,24 @@ $routes = [
     'documentation/received' => ['controllers/DocumentationController.php', 'DocumentationController', 'received'],
     'documentation/save-docs'=> ['controllers/DocumentationController.php', 'DocumentationController', 'saveDocs'],
 
+    // Documentation portal
+    'doc-portal'             => ['controllers/DocPortalController.php',    'DocPortalController',    'home'],
+    'doc-portal/queue'       => ['controllers/DocPortalController.php',    'DocPortalController',    'index'],
+    'doc-portal/lead'        => ['controllers/DocPortalController.php',    'DocPortalController',    'lead'],
+    'doc-portal/status'      => ['controllers/DocPortalController.php',    'DocPortalController',    'saveStatus'],
+    'doc-portal/assign'      => ['controllers/DocPortalController.php',    'DocPortalController',    'assign'],
+    'doc-portal/upload'      => ['controllers/DocPortalController.php',    'DocPortalController',    'upload'],
+    'doc-portal/file'        => ['controllers/DocPortalController.php',    'DocPortalController',    'file'],
+    'doc-portal/delete-file' => ['controllers/DocPortalController.php',    'DocPortalController',    'deleteFile'],
+    'doc-portal/rename'      => ['controllers/DocPortalController.php',    'DocPortalController',    'rename'],
+    'doc-portal/return-to-sales' => ['controllers/DocPortalController.php','DocPortalController', 'returnToSales'],
+
     // Partner portal
     'partner/dashboard'      => ['controllers/PartnerController.php',      'PartnerController',      'dashboard'],
     'api/partner-stats'      => ['controllers/PartnerController.php',      'PartnerController',      'statsJson'],
+
+    // More (mobile navigation hub)
+    'more'                   => ['controllers/MoreController.php',         'MoreController',         'index'],
 
     // Settings (admin only)
     'settings'               => ['controllers/SettingsController.php',     'SettingsController',     'index'],

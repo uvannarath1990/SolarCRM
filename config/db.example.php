@@ -26,7 +26,17 @@ define('DB_CHARSET', 'utf8mb4');
 
 // ─── App constants ────────────────────────────────────────────────────────────
 define('APP_NAME', 'KRE');
-define('BASE_URL', '/employee');  // matches the folder created in public_html
+define('BASE_URL', '/employee2');  // matches the folder created in public_html
+
+// ─── Document storage ─────────────────────────────────────────────────────────
+// Deliberately OUTSIDE public_html: uploaded KYC and bank documents must never
+// be reachable by URL, only through the authenticated doc-portal/file route.
+// Defined here so no request input can ever influence the storage root.
+// config → employee2 → public_html → kre.org.in → domains → home
+define('UPLOAD_ROOT',     dirname(__DIR__, 5) . '/kre_uploads/lead_docs');
+define('MAX_DOC_BYTES',   25 * 1024 * 1024);   // per file, well under the 1536M ini
+define('MAX_LEAD_BYTES',  250 * 1024 * 1024);  // per lead
+define('MIN_FREE_BYTES',  500 * 1024 * 1024);  // refuse uploads below this free space
 
 // ─── PDO singleton ────────────────────────────────────────────────────────────
 function getPdo(): PDO

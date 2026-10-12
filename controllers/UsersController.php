@@ -52,6 +52,63 @@ class UsersController
         require __DIR__ . '/../views/users/form.php';
     }
 
+    /**
+     * Work-hours and tracking roster — every active user in one editable grid.
+     * Admin only: deciding who is tracked is not a manager-level power.
+     */
+    public function tracking(): void
+    {
+        requireRole('admin');
+
+        $users = $this->pdo->query(
+            "SELECT `id`,`name`,`role`,`work_start`,`work_end`,`work_days`,`track_location`
+             FROM `users` WHERE `is_active`=1
+             ORDER BY `track_location` DESC, `name`"
+        )->fetchAll();
+
+        $pageTitle = 'Location Tracking';
+        require __DIR__ . '/../views/users/tracking.php';
+    }
+
+    public function trackingSave(): void
+    {
+        requireRole('admin');
+        csrfVerify();
+
+        $ids     = (array) ($_POST['user_id']   ?? []);
+        $starts  = (array) ($_POST['work_start'] ?? []);
+        $ends    = (array) ($_POST['work_end']   ?? []);
+        $days    = (array) ($_POST['work_days']  ?? []);
+        $tracked = array_map('intval', (array) ($_POST['track'] ?? []));
+
+        $stmt = $this->pdo->prepare(
+            'UPDATE `users` SET `work_start`=?,`work_end`=?,`work_days`=?,`track_location`=? WHERE `id`=?'
+        );
+
+        $changed = 0;
+        foreach ($ids as $id) {
+            $id = (int) $id;
+            if ($id <= 0) continue;
+
+            $start = preg_match('/^\d{2}:\d{2}$/', (string) ($starts[$id] ?? ''))
+                   ? $starts[$id] . ':00' : '09:00:00';
+            $end   = preg_match('/^\d{2}:\d{2}$/', (string) ($ends[$id] ?? ''))
+                   ? $ends[$id] . ':00' : '19:00:00';
+
+            $d = array_values(array_intersect(
+                array_map('strval', (array) ($days[$id] ?? [])),
+                ['1', '2', '3', '4', '5', '6', '7']
+            ));
+            $workDays = $d ? implode(',', $d) : '1,2,3,4,5,6';
+
+            $stmt->execute([$start, $end, $workDays, in_array($id, $tracked, true) ? 1 : 0, $id]);
+            $changed++;
+        }
+
+        flash('success', $changed . ' user' . ($changed !== 1 ? 's' : '') . ' updated.');
+        redirect('/users/tracking');
+    }
+
     public function save(): void
     {
         requireRole('admin');
@@ -64,6 +121,23 @@ class UsersController
         $roleVal = post('role');   // either 'sales_rep' or 'custom:7'
 
         $managerId  = postInt('manager_id') ?: null;
+
+        // ── Work hours + location tracking ───────────────────────────────────
+        // Out-of-hours positions are rejected at the ping endpoint, so these
+        // values are the only thing deciding when a user can be recorded.
+        $workStart = preg_match('/^\d{2}:\d{2}$/', (string) post('work_start'))
+                   ? post('work_start') . ':00' : '09:00:00';
+        $workEnd   = preg_match('/^\d{2}:\d{2}$/', (string) post('work_end'))
+                   ? post('work_end') . ':00' : '19:00:00';
+
+        $days = $_POST['work_days'] ?? [];
+        $days = array_values(array_intersect(
+            array_map('strval', (array) $days),
+            ['1', '2', '3', '4', '5', '6', '7']
+        ));
+        $workDays = $days ? implode(',', $days) : '1,2,3,4,5,6';
+
+        $trackLocation = post('track_location') ? 1 : 0;
         $systemRoles = ['admin', 'tele_caller', 'sales_rep', 'installer', 'manager',
                         'operation_manager', 'accounts', 'dealer', 'documentation', 'partner'];
         $error = '';
@@ -100,9 +174,11 @@ class UsersController
             if ($id > 0) {
                 // Edit existing
                 $stmt = $this->pdo->prepare(
-                    'UPDATE `users` SET `name`=?,`email`=?,`phone`=?,`role`=?,`role_custom_id`=?,`manager_id`=? WHERE `id`=?'
+                    'UPDATE `users` SET `name`=?,`email`=?,`phone`=?,`role`=?,`role_custom_id`=?,`manager_id`=?,
+                            `work_start`=?,`work_end`=?,`work_days`=?,`track_location`=? WHERE `id`=?'
                 );
-                $stmt->execute([$name, $email, $phone ?: null, $baseRole, $customRoleId, $managerId, $id]);
+                $stmt->execute([$name, $email, $phone ?: null, $baseRole, $customRoleId, $managerId,
+                                $workStart, $workEnd, $workDays, $trackLocation, $id]);
                 $pw = post('password');
                 if ($pw !== '') {
                     if (strlen($pw) < 8) {
@@ -121,10 +197,12 @@ class UsersController
                 } else {
                     $hash = password_hash($pw, PASSWORD_BCRYPT, ['cost' => 12]);
                     $stmt = $this->pdo->prepare(
-                        'INSERT INTO `users` (`name`,`email`,`phone`,`role`,`role_custom_id`,`manager_id`,`password_hash`)
-                         VALUES (?,?,?,?,?,?,?)'
+                        'INSERT INTO `users` (`name`,`email`,`phone`,`role`,`role_custom_id`,`manager_id`,`password_hash`,
+                                              `work_start`,`work_end`,`work_days`,`track_location`)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,?)'
                     );
-                    $stmt->execute([$name, $email, $phone ?: null, $baseRole, $customRoleId, $managerId, $hash]);
+                    $stmt->execute([$name, $email, $phone ?: null, $baseRole, $customRoleId, $managerId, $hash,
+                                    $workStart, $workEnd, $workDays, $trackLocation]);
                     flash('success', 'User created successfully.');
                 }
             }

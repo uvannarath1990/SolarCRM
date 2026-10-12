@@ -79,7 +79,7 @@ class SettingsController
         // "this form did not include the field" and could never be saved.
         $roleSettings = ['doc_tab_roles', 'lead_create_roles',
                          'lead_assign_rep_roles', 'lead_assign_tele_roles',
-                         'lead_assign_partner_roles'];
+                         'lead_assign_partner_roles', 'doc_portal_roles'];
         $validTokens  = array_keys(configurableRoleTokens());
 
         foreach ($roleSettings as $key) {

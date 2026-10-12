@@ -97,13 +97,28 @@ function resolveWorkflowAssignee(string $role, array $lead, PDO $pdo): ?int
             return $row ? (int) $row['id'] : null;
 
         case 'documentation':
-            // Use the documentation user already linked to the lead
+            // An explicit assignment on the lead always wins.
             if (!empty($lead['documentation_user_id'])) {
                 return (int) $lead['documentation_user_id'];
             }
-            // Fall back to first active documentation user in the system
+            // Otherwise the documentation user with the fewest open tasks.
+            // Taking the first user by id instead left one person holding 25
+            // open tasks while a colleague held none. The join to `leads`
+            // keeps tasks on deleted leads out of the count, and the id
+            // tiebreak keeps the choice deterministic (and so testable).
             $row = $pdo->query(
-                "SELECT `id` FROM `users` WHERE `role`='documentation' AND `is_active`=1 ORDER BY `id` LIMIT 1"
+                "SELECT u.`id`
+                   FROM `users` u
+                   LEFT JOIN `workflow_tasks` wt
+                          ON wt.`assigned_to`   = u.`id`
+                         AND wt.`assigned_role` = 'documentation'
+                         AND wt.`status`        = 'pending'
+                   LEFT JOIN `leads` l
+                          ON l.`id` = wt.`lead_id` AND l.`deleted_at` IS NULL
+                  WHERE u.`role` = 'documentation' AND u.`is_active` = 1
+                  GROUP BY u.`id`
+                  ORDER BY COUNT(l.`id`) ASC, u.`id` ASC
+                  LIMIT 1"
             )->fetch();
             return $row ? (int) $row['id'] : null;
 
@@ -116,6 +131,11 @@ function resolveWorkflowAssignee(string $role, array $lead, PDO $pdo): ?int
 // ── Create workflow tasks for a stage (idempotent) ───────────────────────────
 function createWorkflowTasks(int $leadId, string $stage, PDO $pdo): void
 {
+    // Before the early returns below, deliberately: all three routes to Won
+    // funnel through here, and a lead that already has its Won tasks must
+    // still pick up documentation. This makes the handoff self-healing.
+    if ($stage === 'Won') startDocumentationHandoff($leadId, $pdo);
+
     $templates = workflowTemplates();
     if (!isset($templates[$stage])) return;
 
@@ -274,4 +294,143 @@ function applyLeadStage(PDO $pdo, array $lead, string $newStage, ?string $lostRe
     createWorkflowTasks($leadId, $newStage, $pdo);
 
     return null;
+}
+
+// ── Sales → Documentation handoff ────────────────────────────────────────────
+
+/**
+ * Hand a won lead to the documentation team.
+ *
+ * Creates the documentation task, picks an owner, starts the SLA clock and
+ * notifies. Called from createWorkflowTasks() whenever a lead reaches Won, so
+ * every route to Won is covered without touching a single controller.
+ *
+ * Deliberately NOT a workflowTemplates() row:
+ *   - createWorkflowTasks() returns early once any task exists for a stage, so
+ *     a template would never reach the leads that already have Won tasks;
+ *   - every template is due the day it is made, and this one needs Won+3;
+ *   - checkAndTriggerInstallation() counts pending tasks with stage='Won', so a
+ *     documentation task carrying that stage would silently block installation
+ *     scheduling for every won deal until documentation finished.
+ *
+ * That last point is why the task below uses stage='Documentation'. Changing it
+ * to 'Won' would look tidier and would break the installation pipeline.
+ *
+ * Never throws: a documentation problem must not stop a rep recording a win.
+ */
+function startDocumentationHandoff(int $leadId, PDO $pdo): void
+{
+    try {
+        // Idempotent across stage AND status, so the leads that already have a
+        // hand-made documentation task are left alone, and finishing
+        // documentation then re-touching Won never reopens the work.
+        $check = $pdo->prepare(
+            "SELECT COUNT(*) FROM `workflow_tasks`
+              WHERE `lead_id`=? AND `assigned_role`='documentation'"
+        );
+        $check->execute([$leadId]);
+        if ((int) $check->fetchColumn() > 0) return;
+
+        $stmt = $pdo->prepare(
+            'SELECT `id`,`name`,`stage`,`tele_caller_id`,`assigned_rep_id`,`created_by`,
+                    `documentation_user_id`,`documentation_status`
+             FROM `leads` WHERE `id`=? AND `deleted_at` IS NULL LIMIT 1'
+        );
+        $stmt->execute([$leadId]);
+        $lead = $stmt->fetch();
+        if (!$lead || $lead['stage'] !== 'Won') return;
+
+        $assignee = resolveWorkflowAssignee('documentation', $lead, $pdo);
+        $title    = 'Collect and verify customer documents';
+        $dueDate  = date('Y-m-d', strtotime('+3 days'));
+
+        $pdo->prepare(
+            'INSERT INTO `workflow_tasks`
+                (`lead_id`,`stage`,`title`,`assigned_to`,`assigned_role`,`due_date`)
+             VALUES (?,?,?,?,?,?)'
+        )->execute([$leadId, 'Documentation', $title, $assignee, 'documentation', $dueDate]);
+
+        $taskId = (int) $pdo->lastInsertId();
+        auditTaskCreate($taskId, $leadId, $title, 'handoff: Won');
+
+        // Assignment write-back plus the clock, in one statement.
+        // COALESCE never steals an assignment someone made by hand; the CASE
+        // will not drag a lead back out of on_hold or completed.
+        // `updated_at` = `updated_at` stops MySQL's ON UPDATE touching the
+        // column — the "won this month" KPI reads it.
+        $pdo->prepare(
+            "UPDATE `leads`
+                SET `documentation_user_id`    = COALESCE(`documentation_user_id`, ?),
+                    `documentation_status`     = CASE WHEN `documentation_status` = 'not_started'
+                                                      THEN 'in_progress' ELSE `documentation_status` END,
+                    `documentation_started_at` = COALESCE(`documentation_started_at`, NOW()),
+                    `updated_at`               = `updated_at`
+              WHERE `id` = ?"
+        )->execute([$assignee, $leadId]);
+
+        if ($assignee && empty($lead['documentation_user_id'])) {
+            auditUpdate($leadId, 'documentation_user_id', '', (string) $assignee);
+        }
+        if (($lead['documentation_status'] ?? 'not_started') === 'not_started') {
+            auditUpdate($leadId, 'documentation_status', 'not_started', 'in_progress');
+        }
+
+        // Scoped to the handoff on purpose. Putting push inside
+        // createWorkflowTasks() would fire four notifications for the four Won
+        // operations tasks alone.
+        // The explicit URL matters: sendPushToUser() defaults to
+        // /employee/today, which is v1 — the doc team would land in the wrong app.
+        $url = BASE_URL . '/doc-portal/lead?id=' . $leadId;
+        if ($assignee) {
+            sendPushToUser($assignee, 'Documentation assigned', (string) $lead['name'], $url);
+        }
+        $heads = documentationHeadUserIds($pdo);
+        if ($heads) {
+            sendPushToUsers($heads, 'New lead for documentation', (string) $lead['name'], $url);
+        }
+    } catch (\Throwable $e) {
+        // Swallowed by design — see the docblock.
+        error_log('startDocumentationHandoff failed for lead ' . $leadId . ': ' . $e->getMessage());
+    }
+}
+
+/**
+ * Bring a lead back from sales and resume the documentation clock.
+ *
+ * The `documentation_status`='on_hold' guard makes this a no-op if a doc user
+ * already released it by hand, so a double completion cannot double-count the
+ * paused time.
+ */
+function releaseDocumentationHold(int $leadId, PDO $pdo): void
+{
+    try {
+        $pdo->prepare(
+            "UPDATE `leads`
+                SET `doc_hold_seconds`     = `doc_hold_seconds`
+                                           + COALESCE(TIMESTAMPDIFF(SECOND, `doc_hold_at`, NOW()), 0),
+                    `documentation_status` = 'in_progress',
+                    `doc_hold_at`          = NULL,
+                    `doc_hold_reason`      = NULL,
+                    `doc_hold_task_id`     = NULL,
+                    `updated_at`           = `updated_at`
+              WHERE `id` = ? AND `documentation_status` = 'on_hold'"
+        )->execute([$leadId]);
+
+        $stmt = $pdo->prepare(
+            'SELECT `name`,`documentation_user_id` FROM `leads` WHERE `id`=? LIMIT 1'
+        );
+        $stmt->execute([$leadId]);
+        $lead = $stmt->fetch();
+
+        if ($lead && $lead['documentation_user_id']) {
+            sendPushToUser(
+                (int) $lead['documentation_user_id'],
+                'Back from sales',
+                (string) $lead['name'],
+                BASE_URL . '/doc-portal/lead?id=' . $leadId
+            );
+        }
+    } catch (\Throwable $e) {
+        error_log('releaseDocumentationHold failed for lead ' . $leadId . ': ' . $e->getMessage());
+    }
 }

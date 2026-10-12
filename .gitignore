@@ -1,7 +1,6 @@
-# Live credentials — never commit. Copy db.example.php to db.php on each
-# environment and fill in the real values there. v1 and v2 each have their own.
+# Live credentials — never commit. Copy config/db.example.php to
+# config/db.php on each environment and fill in the real values there.
 config/db.php
-v2/config/db.php
 
 # Claude Code's per-machine settings: these carry an allowlist of literal
 # shell commands, which in practice means credentials.

@@ -26,9 +26,13 @@ class WorkflowController
             "SELECT wt.*,
                     l.`name`     AS lead_name,
                     l.`phone`    AS lead_phone,
+                    l.`phone_revealed` AS lead_phone_revealed,
                     l.`email`    AS lead_email,
                     l.`location` AS lead_location,
                     l.`stage`    AS lead_stage,
+                    l.`visit_scheduled_date` AS lead_visit_date,
+                    l.`assigned_rep_id`      AS lead_rep_id,
+                    l.`tele_caller_id`       AS lead_tc_id,
                     a.`name`     AS assignee_name,
                     a.`role`     AS assignee_role,
                     c.`name`     AS completer_name
@@ -79,6 +83,21 @@ class WorkflowController
             "SELECT `id`,`name` FROM `users` WHERE `role`='documentation' AND `is_active`=1 ORDER BY `name`"
         )->fetchAll();
 
+        // What was said on earlier attempts. This is the whole point of asking
+        // for a note: a tele caller opening "call again later" three weeks on
+        // should not have to start the conversation from nothing.
+        $priorNotes = $this->pdo->prepare(
+            "SELECT wt.`notes`, wt.`outcome`, wt.`completed_at`, u.`name` AS by_name
+               FROM `workflow_tasks` wt
+               LEFT JOIN `users` u ON u.`id` = wt.`completed_by`
+              WHERE wt.`lead_id` = ? AND wt.`id` <> ?
+                AND wt.`notes` IS NOT NULL AND wt.`notes` <> ''
+              ORDER BY COALESCE(wt.`completed_at`, wt.`created_at`) DESC
+              LIMIT 3"
+        );
+        $priorNotes->execute([(int) $task['lead_id'], $taskId]);
+        $priorNotes = $priorNotes->fetchAll();
+
         $pageTitle = 'Task: ' . $task['title'];
         require __DIR__ . '/../views/workflow/detail.php';
     }
@@ -125,11 +144,27 @@ class WorkflowController
                      || ($assignedRole === 'sales_rep'
                          && in_array($task['stage'], ['New', 'Visit Scheduled', 'Quoted'], true));
 
-        if ($needsOutcome) {
+        // ── Assignment-gated completion: the manager's own New-stage tasks ────
+        // Both of them ("Site visit scheduled — assign a Sales Rep" and "Review
+        // lead and assign to Tele Caller or Sales Rep") exist solely to get a
+        // name onto the lead, yet both completed with a bare "Mark done" that
+        // assigned nobody and created nothing. The lead went quiet with a visit
+        // date and no rep. Closing one now means naming the person.
+        $needsAssignee = $assignedRole === 'manager' && $task['stage'] === 'New';
+
+        if ($needsAssignee) {
+            $this->completeAssignmentTask($task, $userId, $wasOnTime);
+
+        } elseif ($needsOutcome) {
             $outcome       = trim(post('outcome') ?? '');
             $siteVisitDate = post('outcome_site_visit_date') ?: null;
             $nextVisitDate = post('outcome_next_visit_date') ?: null;
             $lostReason    = trim(post('outcome_lost_reason') ?? '') ?: null;
+            // What was actually said. Kept on the task that was closed, so the
+            // notes build up as a call history rather than one field being
+            // overwritten; the next task reads them back (see priorNotes()).
+            $outcomeNote   = trim(post('outcome_note') ?? '');
+            if ($outcomeNote !== '') $outcomeNote = mb_substr($outcomeNote, 0, 2000);
             $quoteAmount   = post('quote_amount') !== '' && post('quote_amount') !== null
                            ? (float) post('quote_amount') : null;
 
@@ -150,17 +185,26 @@ class WorkflowController
             }
 
             if ($assignedRole === 'sales_rep' && $task['stage'] === 'New') {
-                $valid = ['Site Visit Pending', 'Site Visit Postponed', 'Lead Lost', 'Lead Won'];
+                $valid = ['Site Visit Pending', 'Site Visit Postponed', 'Follow Up Again',
+                          'Lead Lost', 'Lead Won'];
                 if (!in_array($outcome, $valid, true))
                     jsonError('Select a valid outcome.', 422);
                 if ($outcome === 'Site Visit Postponed' && !$nextVisitDate)
                     jsonError('Next Site Visit Date is required.', 422);
+                if ($outcome === 'Follow Up Again' && !$nextVisitDate)
+                    jsonError('Choose the date to follow up on.', 422);
                 if ($outcome === 'Lead Lost' && !$lostReason)
                     jsonError('Lost Reason is required.', 422);
             }
 
             if ($assignedRole === 'sales_rep' && $task['stage'] === 'Visit Scheduled') {
-                $valid = ['Site Visit Completed', 'Site Visit Rescheduled', 'Lead Lost', 'Lead Won'];
+                // No 'Follow Up Again' here: 'Site Visit Completed' now carries its
+                // own follow-up date, and 'Site Visit Rescheduled' covers a visit
+                // that did not happen. A third "chase later" option only muddied
+                // the choice. It remains available at the New stage, which has no
+                // follow-up date of its own.
+                $valid = ['Site Visit Completed', 'Site Visit Rescheduled',
+                          'Lead Lost', 'Lead Won'];
                 if (!in_array($outcome, $valid, true))
                     jsonError('Select a valid outcome.', 422);
                 if ($outcome === 'Site Visit Rescheduled' && !$nextVisitDate)
@@ -191,6 +235,18 @@ class WorkflowController
                  WHERE `id`=?"
             )->execute([$userId, $wasOnTime, $outcome, $siteVisitDate, $nextVisitDate, $lostReason, $taskId]);
             auditTaskUpdate($taskId, $leadId, 'status', 'pending', 'done');
+            // The outcome is the substance of the change; 'done' alone says nothing.
+            auditTaskUpdate($taskId, $leadId, 'outcome', null, $outcome);
+
+            // A separate statement rather than another column in the UPDATE
+            // above: an empty box must leave any existing note alone, and
+            // COALESCE(NULLIF(?,''), `notes`) needs MariaDB to type a
+            // placeholder it cannot type under server-side prepares.
+            if ($outcomeNote !== '') {
+                $this->pdo->prepare('UPDATE `workflow_tasks` SET `notes`=? WHERE `id`=?')
+                          ->execute([$outcomeNote, $taskId]);
+                auditTaskUpdate($taskId, $leadId, 'notes', $task['notes'] ?? null, $outcomeNote);
+            }
 
             // The lead's actual stage — a task's stage is only the stage it was raised at
             $ls = $this->pdo->prepare('SELECT `stage`,`visit_scheduled_date` FROM `leads` WHERE `id`=?');
@@ -275,7 +331,45 @@ class WorkflowController
                 auditUpdate($leadId, 'quote_amount', $task['lead_quote_amount'] ?? null, $quoteAmount);
                 auditStageChange($leadId, 'Visit Scheduled', 'Quoted');
 
+                // Documents the rep collected while standing in the customer's
+                // home — by far the easiest moment to get them, and previously
+                // the visit form had no way to record it.
+                // Only ever sets a flag, never clears one: not ticking a box
+                // here means "I did not collect it today", not "we never had it".
+                $docMap = [
+                    'aadhar'   => 'doc_aadhar',
+                    'mobile'   => 'doc_registered_mobile',
+                    'kseb'     => 'doc_kseb_bill',
+                    'passbook' => 'doc_bank_passbook',
+                ];
+                $got = array_intersect((array) ($_POST['docs_received'] ?? post('docs_received') ?? []),
+                                       array_keys($docMap));
+                foreach ($got as $key) {
+                    $col = $docMap[$key];
+                    $this->pdo->prepare(
+                        "UPDATE `leads` SET `{$col}`=1 WHERE `id`=? AND `{$col}`=0"
+                    )->execute([$leadId]);
+                    if ($this->pdo->query('SELECT ROW_COUNT()')->fetchColumn() > 0) {
+                        auditUpdate($leadId, $col, '0', '1');
+                    }
+                }
+
                 createWorkflowTasks($leadId, 'Quoted', $this->pdo);
+
+                // The template makes the follow-up due today. If the rep agreed a
+                // date with the customer, that date is the truth — otherwise the
+                // task is born overdue tomorrow and the SLA means nothing.
+                if ($nextVisitDate) {
+                    $this->pdo->prepare(
+                        "UPDATE `workflow_tasks` SET `due_date`=?
+                          WHERE `lead_id`=? AND `stage`='Quoted' AND `status`='pending'"
+                    )->execute([$nextVisitDate, $leadId]);
+
+                    $this->pdo->prepare(
+                        'UPDATE `leads` SET `next_followup_date`=? WHERE `id`=?'
+                    )->execute([$nextVisitDate, $leadId]);
+                    auditUpdate($leadId, 'next_followup_date', null, $nextVisitDate);
+                }
             }
             // ── Quoted stage: the rep closes the deal from the follow-up task ──
             if ($task['stage'] === 'Quoted' && $assignedRole === 'sales_rep') {
@@ -338,6 +432,38 @@ class WorkflowController
                 }
             }
 
+            // 'Follow Up Again' → close this task and raise the next one.
+            //
+            // The rep spoke to the customer but there is nothing to record yet:
+            // no visit, no quote, not lost. Previously the only honest options
+            // were to leave the task open and let it age, or close it and lose
+            // the thread. This keeps the lead and its stage exactly where they
+            // are, and puts a dated task back in the rep's queue.
+            if ($outcome === 'Follow Up Again') {
+                $title = 'Follow up with customer';
+
+                $this->pdo->prepare(
+                    "INSERT INTO `workflow_tasks`
+                        (`lead_id`,`stage`,`title`,`assigned_to`,`assigned_role`,`due_date`)
+                     VALUES (?,?,?,?,?,?)"
+                )->execute([
+                    $leadId,
+                    $task['stage'],          // stays on the same stage — nothing moved
+                    $title,
+                    $task['assigned_to'],    // same owner; the relationship is theirs
+                    $assignedRole,
+                    $nextVisitDate,
+                ]);
+                auditTaskCreate((int) $this->pdo->lastInsertId(), $leadId, $title,
+                                'outcome: Follow Up Again');
+
+                // Keep the lead's follow-up date in step with the new task.
+                $this->pdo->prepare(
+                    'UPDATE `leads` SET `next_followup_date`=? WHERE `id`=?'
+                )->execute([$nextVisitDate, $leadId]);
+                auditUpdate($leadId, 'next_followup_date', null, $nextVisitDate);
+            }
+
             // 'Site Visit Pending' → task marked done, no lead-level side-effects.
 
         } else {
@@ -348,6 +474,12 @@ class WorkflowController
                  WHERE `id`=?"
             )->execute([$userId, $wasOnTime, $taskId]);
             auditTaskUpdate($taskId, $leadId, 'status', 'pending', 'done');
+
+            // A sales rep finishing a bounce-back returns the lead to
+            // documentation and resumes its SLA clock.
+            if ($task['stage'] === 'Documentation' && $task['assigned_role'] === 'sales_rep') {
+                releaseDocumentationHold($leadId, $this->pdo);
+            }
 
             if ($task['stage'] === 'Won') {
                 checkAndTriggerInstallation($leadId, $this->pdo);
@@ -365,6 +497,131 @@ class WorkflowController
             'task_id'    => $taskId,
             'lead_stage' => $leadRow['stage'] ?? null,
         ]);
+    }
+
+    /**
+     * Close a manager's "assign somebody" task by actually assigning somebody.
+     *
+     * Names the owner on the lead, raises that person's first task, and closes
+     * this one — the three things the manager would otherwise have had to do by
+     * hand on three different screens.
+     *
+     * A pick is required unless the lead already carries the owner in question,
+     * which is the case when the manager assigned from the lead page and is now
+     * just tidying the task away.
+     *
+     * jsonError() exits, so every failure path here stops before any write.
+     */
+    private function completeAssignmentTask(array $task, int $userId, ?int $wasOnTime): void
+    {
+        $taskId = (int) $task['id'];
+        $leadId = (int) $task['lead_id'];
+
+        $assignTo   = postInt('assign_to');
+        $assignRole = trim(post('assign_role') ?? '');
+
+        $ls = $this->pdo->prepare(
+            'SELECT `stage`,`visit_scheduled_date`,`assigned_rep_id`,`tele_caller_id`,`name`
+               FROM `leads` WHERE `id`=? LIMIT 1'
+        );
+        $ls->execute([$leadId]);
+        $lead = $ls->fetch();
+        if (!$lead) jsonError('Lead not found.', 404);
+
+        // Nothing picked: allowed only when the lead is already owned, so the
+        // task is stale rather than unanswered.
+        if ($assignTo <= 0) {
+            if (!$lead['assigned_rep_id'] && !$lead['tele_caller_id']) {
+                jsonError('Choose who this lead goes to.', 422);
+            }
+            $this->pdo->prepare(
+                "UPDATE `workflow_tasks`
+                    SET `status`='done', `completed_by`=?, `completed_at`=NOW(), `was_on_time`=?
+                  WHERE `id`=?"
+            )->execute([$userId, $wasOnTime, $taskId]);
+            auditTaskUpdate($taskId, $leadId, 'status', 'pending', 'done');
+            checkAndAdvanceWorkflow($leadId, $this->pdo);
+            return;
+        }
+
+        if (!in_array($assignRole, ['sales_rep', 'tele_caller'], true)) {
+            jsonError('Select a valid role.', 422);
+        }
+
+        // The role comes from the client, so confirm it against the user row
+        // rather than trusting it — otherwise a tele caller could be written
+        // into assigned_rep_id.
+        $us = $this->pdo->prepare(
+            'SELECT `id`,`name`,`role` FROM `users` WHERE `id`=? AND `is_active`=1 LIMIT 1'
+        );
+        $us->execute([$assignTo]);
+        $user = $us->fetch();
+        if (!$user || $user['role'] !== $assignRole) {
+            jsonError('That person cannot be assigned to this lead.', 422);
+        }
+
+        $leadStage = (string) $lead['stage'];
+        $visitDate = $lead['visit_scheduled_date'] ?: null;
+        $leadUrl   = BASE_URL . '/leads/detail?id=' . $leadId;
+
+        // ── Name the owner on the lead ───────────────────────────────────────
+        $col = $assignRole === 'sales_rep' ? 'assigned_rep_id' : 'tele_caller_id';
+        $old = $lead[$col] !== null ? (int) $lead[$col] : null;
+
+        $this->pdo->prepare(
+            "UPDATE `leads` SET `{$col}`=?, `updated_at`=NOW() WHERE `id`=?"
+        )->execute([$assignTo, $leadId]);
+        auditUpdate($leadId, $col, $old, $assignTo);
+
+        // ── Raise their first task ───────────────────────────────────────────
+        if ($assignRole === 'sales_rep' && $visitDate) {
+            // Same shape a lead created with BOTH a rep and a date gets, so a
+            // lead that arrived date-first ends up indistinguishable from one
+            // that arrived complete.
+            $newStage = 'Visit Scheduled';
+            $newTitle = 'Conduct site visit and follow up with customer';
+            $newDue   = $visitDate;
+
+            if (in_array($leadStage, ['New', 'Contacted'], true)) {
+                $this->pdo->prepare(
+                    "UPDATE `leads` SET `stage`='Visit Scheduled', `updated_at`=NOW() WHERE `id`=?"
+                )->execute([$leadId]);
+                auditStageChange($leadId, $leadStage, 'Visit Scheduled');
+            }
+        } elseif ($assignRole === 'sales_rep') {
+            $newStage = $leadStage;
+            $newTitle = 'Schedule site visit with customer';
+            $newDue   = date('Y-m-d');
+        } else {
+            $newStage = $leadStage;
+            $newTitle = 'Call customer and arrange site visit';
+            $newDue   = date('Y-m-d');
+        }
+
+        $this->pdo->prepare(
+            "INSERT INTO `workflow_tasks`
+                (`lead_id`,`stage`,`title`,`assigned_to`,`assigned_role`,`due_date`)
+             VALUES (?,?,?,?,?,?)"
+        )->execute([$leadId, $newStage, $newTitle, $assignTo, $assignRole, $newDue]);
+        auditTaskCreate((int) $this->pdo->lastInsertId(), $leadId, $newTitle,
+                        'assigned by task #' . $taskId);
+
+        // ── Close this one ───────────────────────────────────────────────────
+        $this->pdo->prepare(
+            "UPDATE `workflow_tasks`
+                SET `status`='done', `completed_by`=?, `completed_at`=NOW(), `was_on_time`=?,
+                    `outcome`=?
+              WHERE `id`=?"
+        )->execute([$userId, $wasOnTime, 'Assigned to ' . $user['name'], $taskId]);
+        auditTaskUpdate($taskId, $leadId, 'status', 'pending', 'done');
+        auditTaskUpdate($taskId, $leadId, 'outcome', null, 'Assigned to ' . $user['name']);
+
+        sendPushToUser(
+            $assignTo,
+            $assignRole === 'sales_rep' ? 'Lead Assigned' : 'Call Assigned',
+            $lead['name'] . ($newDue ? ' · ' . date('d M', strtotime($newDue)) : ''),
+            $leadUrl
+        );
     }
 
     // ── Skip a task (admin only) ──────────────────────────────────────────────

@@ -100,6 +100,13 @@
                         'help'  => 'Partners are always attributed to leads they submit themselves.',
                         'value' => $settings['lead_assign_partner_roles'] ?? DEFAULT_ASSIGN_PARTNER_ROLES,
                     ],
+                    'doc_portal_roles' => [
+                        'title' => 'Who can sign in through the Documentation login',
+                        'help'  => 'The Documentation tab on the login page. Partners see only '
+                                 . 'their own leads there, and documentation users other than '
+                                 . 'the Head see only leads assigned to them.',
+                        'value' => $settings['doc_portal_roles'] ?? DEFAULT_DOC_PORTAL_ROLES,
+                    ],
                     'doc_tab_roles' => [
                         'title' => 'Who can see the Pending Docs / Docs Received tabs',
                         'help'  => 'Documentation users other than the Head only ever see leads '

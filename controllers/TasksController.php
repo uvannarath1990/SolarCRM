@@ -215,9 +215,23 @@ class TasksController
         $isAdmin = in_array($role, ['admin', 'manager'], true);
 
         if ($isAdmin) {
-            // Admin sees all pending workflow tasks (including unassigned)
-            $wUserWhere  = $filterUserId ? 'AND wt.`assigned_to` = ?' : '';
-            $wUserParams = $filterUserId ? [$filterUserId] : [];
+            // "My Tasks" means the signed-in user's tasks, for a manager too.
+            // Defaulting admins to every open task in the business turned this
+            // page into a few hundred cards that belonged to other people.
+            // ?scope=all restores the everything view, and the existing
+            // filter_user still narrows to one person.
+            $seeAll = (($_GET['scope'] ?? '') === 'all') || $filterUserId > 0;
+
+            if ($filterUserId) {
+                $wUserWhere  = 'AND wt.`assigned_to` = ?';
+                $wUserParams = [$filterUserId];
+            } elseif ($seeAll) {
+                $wUserWhere  = '';
+                $wUserParams = [];
+            } else {
+                $wUserWhere  = 'AND wt.`assigned_to` = ?';
+                $wUserParams = [$userId];
+            }
             $wStmt = $this->pdo->prepare(
                 "SELECT wt.`id`, wt.`lead_id`, wt.`stage`, wt.`title`, wt.`due_date`,
                         wt.`assigned_to`, wt.`assigned_role`, wt.`status`,

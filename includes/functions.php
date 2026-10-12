@@ -324,21 +324,37 @@ function isDocumentationHead(): bool
     static $cache = null;
     if ($cache !== null) return $cache;
 
-    // Resolve against the user row rather than the session: role_custom_id is
-    // only written at login, so a session opened before that would miss it and
-    // silently demote the Head to an ordinary documentation user.
-    $stmt = getPdo()->prepare(
-        "SELECT 1
-         FROM `users` u
-         JOIN `roles` r ON r.`id` = u.`role_custom_id`
-         WHERE u.`id` = ?
-           AND r.`base_role` = 'documentation'
-           AND r.`is_active` = 1
-           AND LOWER(r.`label`) LIKE '%head%'
-         LIMIT 1"
-    );
-    $stmt->execute([(int) ($_SESSION['user_id'] ?? 0)]);
-    return $cache = (bool) $stmt->fetchColumn();
+    return $cache = isDocumentationHeadFor((int) ($_SESSION['user_id'] ?? 0));
+}
+
+/**
+ * The same test for an arbitrary user id, with no session and no cache.
+ *
+ * The login path has to decide whether someone may use the documentation portal
+ * *before* a session exists, so the lookup cannot read $_SESSION. Resolving
+ * against the user row also keeps this correct for a session opened before
+ * role_custom_id was written.
+ */
+function isDocumentationHeadFor(int $userId): bool
+{
+    if ($userId <= 0) return false;
+
+    try {
+        $stmt = getPdo()->prepare(
+            "SELECT 1
+             FROM `users` u
+             JOIN `roles` r ON r.`id` = u.`role_custom_id`
+             WHERE u.`id` = ?
+               AND r.`base_role` = 'documentation'
+               AND r.`is_active` = 1
+               AND LOWER(r.`label`) LIKE '%head%'
+             LIMIT 1"
+        );
+        $stmt->execute([$userId]);
+        return (bool) $stmt->fetchColumn();
+    } catch (\Throwable $e) {
+        return false;   // roles table may not exist on an older install
+    }
 }
 
 /**
@@ -602,4 +618,288 @@ function assertLeadAccess(int $leadId): array
     }
 
     return $lead;
+}
+
+/**
+ * Whether the signed-in user has location tracking switched on.
+ *
+ * Read from the database rather than the session: v1 and v2 share a session
+ * cookie, so a user who signed in on v1 has a session that predates this
+ * column entirely. Cached per request.
+ */
+function userTracksLocation(): bool
+{
+    static $cached = null;
+    if ($cached !== null) return $cached;
+
+    $userId = (int) ($_SESSION['user_id'] ?? 0);
+    if ($userId <= 0) return $cached = false;
+
+    try {
+        $stmt = getPdo()->prepare('SELECT `track_location` FROM `users` WHERE `id`=? LIMIT 1');
+        $stmt->execute([$userId]);
+        $cached = (int) ($stmt->fetchColumn() ?: 0) === 1;
+    } catch (\Throwable $e) {
+        $cached = false; // Column not migrated yet.
+    }
+    return $cached;
+}
+
+/**
+ * A stable colour for a user, used to tell people apart on the team map.
+ *
+ * Derived from the id so it never changes between page loads, and mirrored by
+ * the same palette in team-map.js — the roster swatch and the map dot must
+ * agree or the colour coding is worse than useless.
+ */
+function userColor(int $userId): string
+{
+    $palette = [
+        '#2563EB', '#DC2626', '#059669', '#D97706', '#7C3AED',
+        '#DB2777', '#0891B2', '#65A30D', '#EA580C', '#4F46E5',
+    ];
+    return $palette[$userId % count($palette)];
+}
+
+// ─── Documentation portal ─────────────────────────────────────────────────────
+
+/**
+ * Roles allowed to sign in through the Documentation login tab.
+ * There is no plain 'documentation' token — configurableRoleTokens() splits that
+ * role into head/user, so both are listed.
+ */
+// operation_manager is included because the documentation team reports to one:
+// without it, the person who actually manages documentation cannot open the
+// portal at all. This default only applies to fresh installs — an existing
+// doc_portal_roles setting wins, and is edited in Settings.
+const DEFAULT_DOC_PORTAL_ROLES = 'admin|manager|operation_manager|partner|documentation_head|documentation_user';
+
+/** Role tokens for an arbitrary user row — the session-free twin of currentRoleTokens(). */
+function userRoleTokens(array $user): array
+{
+    $role   = (string) ($user['role'] ?? '');
+    $tokens = [$role];
+    if ($role === 'documentation') {
+        $tokens[] = isDocumentationHeadFor((int) ($user['id'] ?? 0))
+                  ? 'documentation_head' : 'documentation_user';
+    }
+    return $tokens;
+}
+
+/** Can the signed-in user use the documentation portal? */
+function canUseDocPortal(): bool
+{
+    return roleCan('doc_portal_roles', DEFAULT_DOC_PORTAL_ROLES);
+}
+
+/** The same question at login time, before a session exists. */
+function userCanUseDocPortal(array $user): bool
+{
+    return (bool) array_intersect(
+        userRoleTokens($user),
+        roleSettingTokens('doc_portal_roles', DEFAULT_DOC_PORTAL_ROLES)
+    );
+}
+
+/** Guard for every portal route. The session flag is navigation state, not a gate. */
+function requirePortalAccess(): void
+{
+    requireLogin();
+    if (!canUseDocPortal()) {
+        http_response_code(403);
+        die('Access denied.');
+    }
+}
+
+/**
+ * Where a user lands after signing in. Single source of truth — this decision
+ * used to be duplicated as two different ternaries in AuthController.
+ */
+function loginLandingPath(): string
+{
+    if (($_SESSION['portal_mode'] ?? '') === 'doc' && canUseDocPortal()) {
+        return '/doc-portal';
+    }
+    return hasRole('partner') ? '/partner/dashboard' : '/today';
+}
+
+/**
+ * Which leads this user may see in the portal.
+ *
+ * Deliberately NOT canAccessLead(): that returns true for a lead's creator and
+ * for any sales rep who owns it, which would pull non-documentation leads into
+ * the portal. Appends to $params in the order the placeholders appear.
+ */
+function docPortalScopeSql(array &$params): string
+{
+    $role   = $_SESSION['role'] ?? '';
+    $userId = (int) ($_SESSION['user_id'] ?? 0);
+
+    if (in_array($role, ['admin', 'manager', 'operation_manager'], true)) {
+        return '1';
+    }
+    if ($role === 'documentation') {
+        if (isDocumentationHead()) return '1';
+        $params[] = $userId;
+        $params[] = $userId;
+        return documentationScopeSql();
+    }
+    if ($role === 'partner') {
+        $params[] = $userId;
+        return '(l.`partner_id` = ?)';
+    }
+    return '0';
+}
+
+/** Single-lead version of the same rule, used by every write and file route. */
+function docPortalCanAccessLead(PDO $pdo, int $leadId): bool
+{
+    if ($leadId <= 0) return false;
+
+    $params = [];
+    $scope  = docPortalScopeSql($params);
+    if ($scope === '0') return false;
+
+    $sql = "SELECT 1 FROM `leads` l
+            WHERE l.`id` = ? AND l.`deleted_at` IS NULL AND ({$scope}) LIMIT 1";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute(array_merge([$leadId], $params));
+    return (bool) $stmt->fetchColumn();
+}
+
+/**
+ * Documentation Heads, resolved from the database.
+ *
+ * isDocumentationHead() reads the session and so is useless from the handoff or
+ * the SLA sweeper, which run with no signed-in user in context.
+ *
+ * Returns [] when nobody holds the role — which is the case until one is
+ * appointed, and means escalation degrades to silence rather than an error.
+ */
+function documentationHeadUserIds(PDO $pdo): array
+{
+    try {
+        $rows = $pdo->query(
+            "SELECT u.`id`
+               FROM `users` u
+               JOIN `roles` r ON r.`id` = u.`role_custom_id`
+              WHERE r.`base_role` = 'documentation'
+                AND r.`is_active` = 1
+                AND LOWER(r.`label`) LIKE '%head%'
+                AND u.`is_active`  = 1"
+        )->fetchAll();
+        return array_map(fn($r) => (int) $r['id'], $rows);
+    } catch (\Throwable $e) {
+        return [];
+    }
+}
+
+/**
+ * SQL fragment for elapsed documentation days, excluding time the lead spent
+ * back with sales.
+ *
+ * Kept in one place so the queue, the overdue count and the sweeper can never
+ * disagree about how old a piece of documentation work is.
+ */
+function documentationElapsedDaysSql(string $alias = 'l'): string
+{
+    $a = '`' . $alias . '`';
+    return "(
+        TIMESTAMPDIFF(SECOND, {$a}.`documentation_started_at`, NOW())
+        - {$a}.`doc_hold_seconds`
+        - IF({$a}.`documentation_status` = 'on_hold',
+             TIMESTAMPDIFF(SECOND, {$a}.`doc_hold_at`, NOW()), 0)
+    ) / 86400";
+}
+
+
+/**
+ * Which documentation users this viewer may see statistics for.
+ *
+ * A documentation user sees only themselves. A manager sees the documentation
+ * staff who report to them — the hierarchy is populated, and all four currently
+ * report to one operation_manager. Admins and the Documentation Head see
+ * everyone, as do managers with no documentation reportees, so a manager is
+ * never shown an empty page with no explanation.
+ *
+ * Returns [ids, label] — the label tells the page whose numbers these are.
+ */
+function docPortalTeamScope(PDO $pdo): array
+{
+    $role   = $_SESSION['role'] ?? '';
+    $userId = (int) ($_SESSION['user_id'] ?? 0);
+
+    $allIds = function () use ($pdo): array {
+        $rows = $pdo->query(
+            "SELECT `id` FROM `users` WHERE `role`='documentation' AND `is_active`=1 ORDER BY `name`"
+        )->fetchAll();
+        return array_map(fn($r) => (int) $r['id'], $rows);
+    };
+
+    if ($role === 'admin' || isDocumentationHead()) {
+        return [$allIds(), 'All documentation'];
+    }
+
+    if (in_array($role, ['manager', 'operation_manager'], true)) {
+        $stmt = $pdo->prepare(
+            "SELECT `id` FROM `users`
+              WHERE `role`='documentation' AND `is_active`=1 AND `manager_id`=? ORDER BY `name`"
+        );
+        $stmt->execute([$userId]);
+        $ids = array_map(fn($r) => (int) $r['id'], $stmt->fetchAll());
+        return $ids ? [$ids, 'Your team'] : [$allIds(), 'All documentation'];
+    }
+
+    if ($role === 'documentation') {
+        return [[$userId], 'Your work'];
+    }
+
+    return [[], ''];   // partners get no team view
+}
+
+
+/**
+ * Leads whose documentation was finished before documentation_status existed.
+ *
+ * The status column was added without a backfill, so every historical lead
+ * reads 'not_started' — including ones the team completed months ago through a
+ * workflow task. Without this, finished work reappears in the live queue.
+ *
+ * True when a documentation task was completed and none is still open.
+ */
+function documentationLegacyDoneSql(string $alias = 'l'): string
+{
+    $a = '`' . $alias . '`';
+    return "(EXISTS (SELECT 1 FROM `workflow_tasks` dwt
+                      WHERE dwt.`lead_id` = {$a}.`id`
+                        AND dwt.`assigned_role` = 'documentation'
+                        AND dwt.`status` = 'done')
+             AND NOT EXISTS (SELECT 1 FROM `workflow_tasks` dwp
+                              WHERE dwp.`lead_id` = {$a}.`id`
+                                AND dwp.`assigned_role` = 'documentation'
+                                AND dwp.`status` = 'pending'))";
+}
+
+
+/**
+ * May this user see and add files on this lead?
+ *
+ * Deliberately wider than docPortalCanAccessLead(): that one keeps the
+ * documentation QUEUE clean by excluding a lead's creator and its sales rep,
+ * which is right for a work queue but wrong for files. The rep is standing with
+ * the customer holding the Aadhar card — they are the best person to photograph
+ * it, and blocking them just means the document never arrives.
+ *
+ * canAccessLead() already encodes the per-role rules, including documentation
+ * scope and partner ownership, so this is a thin wrapper that loads the row.
+ */
+function canAccessLeadFiles(PDO $pdo, int $leadId): bool
+{
+    if ($leadId <= 0) return false;
+
+    $stmt = $pdo->prepare('SELECT * FROM `leads` WHERE `id`=? AND `deleted_at` IS NULL LIMIT 1');
+    $stmt->execute([$leadId]);
+    $lead = $stmt->fetch();
+
+    return $lead ? canAccessLead($pdo, $lead) : false;
 }

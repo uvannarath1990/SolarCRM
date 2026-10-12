@@ -144,6 +144,10 @@ function _push_http(string $endpoint, string $body, string $jwt, string $vapidPu
 // ── Internal dispatcher ───────────────────────────────────────────────────────
 function _push_ready(): bool
 {
+    // Bulk/CLI scripts define this so a backfill cannot dump one notification
+    // per lead onto the team in a single burst.
+    if (defined('KRE_BACKFILL_NO_PUSH')) return false;
+
     return getSetting('vapid_public_key') !== ''
         && getSetting('vapid_private_key') !== ''
         && function_exists('openssl_pkey_derive');
